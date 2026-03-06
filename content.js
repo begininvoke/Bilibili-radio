@@ -7,7 +7,8 @@ let pageState = {
   originalQuality: 'auto',
   playbackTime: 0,
   danmakuState: true,
-  animationState: true
+  animationState: true,
+  wasPlaying: false
 };
 
 // 初始化
@@ -85,6 +86,20 @@ function handleMessage(message) {
     case 'switchToForeground':
       switchToForeground();
       break;
+    case 'windowMinimized':
+      // 窗口最小化时，强制切换到后台模式
+      if (!pageState.isBackground) {
+        pageState.isBackground = true;
+        switchToBackground();
+      }
+      break;
+    case 'windowRestored':
+      // 窗口恢复时，切换到前台模式
+      if (pageState.isBackground) {
+        pageState.isBackground = false;
+        switchToForeground();
+      }
+      break;
   }
 }
 
@@ -93,6 +108,12 @@ function switchToBackground() {
   // 记录当前状态
   if (pageState.videoElement) {
     pageState.playbackTime = pageState.videoElement.currentTime;
+    pageState.wasPlaying = !pageState.videoElement.paused;
+    
+    // 暂停视频播放，这是唯一能有效截断视频流下载的方法
+    if (!pageState.videoElement.paused) {
+      pageState.videoElement.pause();
+    }
   }
   
   // 隐藏弹幕
@@ -100,14 +121,6 @@ function switchToBackground() {
   
   // 禁用动画
   disableAnimations();
-  
-  // 暂停视频渲染（如果可能）
-  if (pageState.videoElement) {
-    // 保存原始播放状态
-    pageState.originalPlaybackState = !pageState.videoElement.paused;
-    // 暂停视频
-    // 注意：不暂停视频，只暂停渲染
-  }
 }
 
 // 切换到前台模式
@@ -118,16 +131,19 @@ function switchToForeground() {
   // 恢复动画
   restoreAnimations();
   
-  // 恢复视频渲染
+  // 恢复视频播放
   if (pageState.videoElement) {
     // 恢复播放位置
     if (pageState.playbackTime > 0) {
       pageState.videoElement.currentTime = pageState.playbackTime;
     }
-    // 恢复播放状态
-    // if (pageState.originalPlaybackState) {
-    //   pageState.videoElement.play();
-    // }
+    
+    // 如果之前在播放，则恢复播放
+    if (pageState.wasPlaying) {
+      pageState.videoElement.play().catch(e => {
+        console.log('恢复播放失败:', e);
+      });
+    }
   }
 }
 

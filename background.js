@@ -10,6 +10,10 @@ let trafficData = {
   sessions: []
 };
 
+// 当前窗口状态
+let currentWindowId = null;
+let isWindowMinimized = false;
+
 // 初始化流量数据
 async function initTrafficData() {
   const data = await chrome.storage.local.get(['trafficData']);
@@ -61,6 +65,54 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 // 处理标签页关闭
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabStates.delete(tabId);
+});
+
+// 监听窗口焦点变化
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  // windowId为-1表示没有窗口获得焦点（最小化或切换到其他应用）
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    // 窗口最小化或失去焦点
+    isWindowMinimized = true;
+    
+    // 通知所有视频标签页切换到后台模式
+    for (const [tabId, state] of tabStates.entries()) {
+      if (!state.isBackground) {
+        state.isBackground = true;
+        state.lastActivity = Date.now();
+        
+        try {
+          await chrome.tabs.sendMessage(tabId, { action: 'windowMinimized' });
+        } catch (e) {
+          // 内容脚本可能还未加载
+        }
+      }
+    }
+  } else {
+    // 窗口恢复焦点
+    isWindowMinimized = false;
+    currentWindowId = windowId;
+    
+    // 获取当前窗口的活动标签页
+    try {
+      const tabs = await chrome.tabs.query({ active: true, windowId: windowId });
+      if (tabs.length > 0) {
+        const activeTab = tabs[0];
+        const state = tabStates.get(activeTab.id);
+        
+        if (state && state.isBackground) {
+          state.isBackground = false;
+          
+          try {
+            await chrome.tabs.sendMessage(activeTab.id, { action: 'windowRestored' });
+          } catch (e) {
+            // 内容脚本可能还未加载
+          }
+        }
+      }
+    } catch (e) {
+      console.error('获取活动标签页失败:', e);
+    }
+  }
 });
 
 // 检查是否是视频网站
@@ -206,6 +258,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     case 'getTabState':
       sendResponse(tabStates.get(tabId));
+      break;
+    
+    case 'getWindowState':
+      sendResponse({
+        isWindowMinimized: isWindowMinimized,
+        currentWindowId: currentWindowId
+      });
       break;
   }
 });

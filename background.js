@@ -124,7 +124,9 @@ function isVideoSite(url) {
   return videoSites.some(site => url.includes(site));
 }
 
-// 视频源拦截与修改
+// 视频源拦截与修改（已注释，暂停视频作为主要省流手段）
+// 注意：webRequest拦截可能导致视频加载失败，建议使用暂停视频的方式省流
+/*
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     const tabId = details.tabId;
@@ -159,6 +161,7 @@ chrome.webRequest.onBeforeRequest.addListener(
   },
   ['blocking']
 );
+*/
 
 // 流量监控
 chrome.webRequest.onCompleted.addListener(

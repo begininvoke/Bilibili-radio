@@ -6,10 +6,8 @@
   
   "permissions": [
     "tabs",
-    "webRequest",
-    "webRequestBlocking",
     "storage",
-    "declarativeNetRequest"
+    "webRequest"
   ],
   "host_permissions": [
     "*://*.bilibili.com/*",

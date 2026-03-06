@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "智能省流后台播放助手",
+  "version": "1.0.0",
+  "description": "智能切换视频播放模式，后台仅音频，前台全画质，节省流量",
+  
+  "permissions": [
+    "tabs",
+    "webRequest",
+    "webRequestBlocking",
+    "storage",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "*://*.bilibili.com/*",
+    "*://*.youtube.com/*",
+    "*://*.googlevideo.com/*",
+    "*://*.bilivideo.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.bilibili.com/*",
+        "*://*.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/index.html"
+  }
+}

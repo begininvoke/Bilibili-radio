@@ -163,75 +163,72 @@ chrome.webRequest.onBeforeRequest.addListener(
 );
 */
 
-// 流量监控
+// 流量监控（修复版）
 chrome.webRequest.onCompleted.addListener(
   (details) => {
     const tabId = details.tabId;
-    if (tabId === -1) return; // 非标签页请求
+    if (tabId === -1) return;
 
     const state = tabStates.get(tabId);
     if (!state) return;
 
     const url = details.url;
-    // 筛选视频流请求
-    if (isVideoRequest(url, details.type)) {
-      const contentLength = getContentLength(details.responseHeaders);
-      if (contentLength > 0) {
-        // 计算节省的流量（假设纯音频流量是视频流量的10%）
-        const savedBytes = state.isBackground ? contentLength * 0.9 : 0;
+    
+    // 放宽匹配条件
+    if (isVideoRequest(url)) {
+      // 优先使用 Chrome 提供的数据长度
+      let bytes = details.encodedDataLength || 0;
+      
+      // 备用方案：尝试从响应头获取
+      if (bytes === 0) {
+        bytes = getContentLength(details.responseHeaders);
+      }
+      
+      if (bytes > 0) {
+        const savedBytes = state.isBackground ? bytes * 0.9 : 0;
         
-        // 更新流量数据
-        trafficData.totalBytes += contentLength;
+        trafficData.totalBytes += bytes;
         trafficData.totalSavedBytes += savedBytes;
         
-        // 添加会话记录
         trafficData.sessions.push({
           url: state.url,
-          bytes: contentLength,
+          bytes: bytes,
           savedBytes: savedBytes,
-          timestamp: Date.now(),
-          duration: 0 // 后续可通过其他方式计算
+          timestamp: Date.now()
         });
         
-        // 限制会话记录数量
         if (trafficData.sessions.length > 100) {
           trafficData.sessions = trafficData.sessions.slice(-100);
         }
         
-        // 保存流量数据
+        // 添加日志确认捕获到请求
+        console.log(`[流量监控] 捕获视频请求: ${url.substring(0, 100)}... 大小: ${(bytes / 1024).toFixed(2)} KB`);
+        
         saveTrafficData();
       }
     }
   },
-  {
-    urls: ['<all_urls>']
+  { 
+    urls: ['<all_urls>'] 
   },
   ['responseHeaders']
 );
 
-// 检查是否是视频请求
-function isVideoRequest(url, type) {
-  const videoExtensions = ['.m4s', '.mp4', '.m3u8', '.mpd'];
-  const videoTypes = ['media'];
-  
-  return videoTypes.includes(type) || 
-    videoExtensions.some(ext => url.includes(ext));
+// 检查是否是视频请求（修复版）
+function isVideoRequest(url) {
+  const urlLower = url.toLowerCase();
+  // 匹配 B站/YouTube 常见的视频特征
+  const patterns = [
+    '.m4s', 'bilivideo', 'video', 'audio', '.mp4', '.m3u8', '.mpd', 'googlevideo'
+  ];
+  return patterns.some(p => urlLower.includes(p));
 }
 
-// 获取内容长度
+// 获取内容长度（保留备用）
 function getContentLength(headers) {
   if (!headers) return 0;
-  
-  const contentLengthHeader = headers.find(header => 
-    header.name.toLowerCase() === 'content-length'
-  );
-  
-  if (contentLengthHeader) {
-    return parseInt(contentLengthHeader.value) || 0;
-  }
-  
-  // 使用encodedDataLength作为备选
-  return 0;
+  const header = headers.find(h => h.name.toLowerCase() === 'content-length');
+  return header ? parseInt(header.value) || 0 : 0;
 }
 
 // 处理来自内容脚本的消息

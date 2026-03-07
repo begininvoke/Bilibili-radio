@@ -8,7 +8,11 @@ let pageState = {
   playbackTime: 0,
   danmakuState: true,
   animationState: true,
-  wasPlaying: false
+  wasPlaying: false,
+  originalQualityText: null,
+  originalStyle: null,
+  originalPlayerBg: null,
+  canvasStates: null
 };
 
 // 初始化
@@ -104,47 +108,155 @@ function handleMessage(message) {
 }
 
 // 切换到后台模式
-function switchToBackground() {
-  // 记录当前状态
-  if (pageState.videoElement) {
-    pageState.playbackTime = pageState.videoElement.currentTime;
-    pageState.wasPlaying = !pageState.videoElement.paused;
-    
-    // 暂停视频播放，这是唯一能有效截断视频流下载的方法
-    if (!pageState.videoElement.paused) {
-      pageState.videoElement.pause();
-    }
+async function switchToBackground() {
+  if (!pageState.videoElement) return;
+
+  // 1. 保存当前播放状态
+  pageState.wasPlaying = !pageState.videoElement.paused;
+  pageState.playbackTime = pageState.videoElement.currentTime;
+
+  // 2. 【核心】切换到最低画质 (省流量大头)
+  // 低画质(360P)通常只有几百KB/秒，比高清省90%以上
+  await switchToLowQuality();
+
+  // 3. 【核心】开启"听歌模式"
+  // 视频继续播放(保持下载和音频)，但把画面移出屏幕
+  if (pageState.wasPlaying) {
+    enableAudioOnlyMode();
   }
-  
-  // 隐藏弹幕
+
+  // 4. 清理页面干扰
   hideDanmaku();
-  
-  // 禁用动画
   disableAnimations();
 }
 
 // 切换到前台模式
 function switchToForeground() {
-  // 恢复弹幕
+  // 1. 关闭"听歌模式"，恢复画面显示
+  disableAudioOnlyMode();
+
+  // 2. 恢复原来的画质
+  restoreQuality();
+
+  // 3. 恢复弹幕和动画
   restoreDanmaku();
-  
-  // 恢复动画
   restoreAnimations();
-  
-  // 恢复视频播放
-  if (pageState.videoElement) {
-    // 恢复播放位置
-    if (pageState.playbackTime > 0) {
-      pageState.videoElement.currentTime = pageState.playbackTime;
-    }
-    
-    // 如果之前在播放，则恢复播放
-    if (pageState.wasPlaying) {
-      pageState.videoElement.play().catch(e => {
-        console.log('恢复播放失败:', e);
-      });
+}
+
+// ==========================================
+// 核心功能函数
+// ==========================================
+
+// 切换到最低画质
+async function switchToLowQuality() {
+  // === B站适配 ===
+  const qualityBtn = document.querySelector('.bilibili-player-video-btn-quality-name');
+  if (!qualityBtn) return;
+
+  // 1. 保存当前的画质文字（用于恢复）
+  pageState.originalQualityText = qualityBtn.textContent.trim();
+
+  // 如果已经是最低画质，就不折腾了
+  if (pageState.originalQualityText.includes('流畅') || pageState.originalQualityText.includes('360P')) {
+    return;
+  }
+
+  // 2. 点击打开画质菜单
+  qualityBtn.click();
+  await sleep(100); // 等菜单弹出
+
+  // 3. 找到所有选项，点击最后一个（通常是最低画质）
+  const qualityItems = document.querySelectorAll('.bilibili-player-video-quality-menu-item');
+  if (qualityItems.length > 0) {
+    // 点击最后一个
+    qualityItems[qualityItems.length - 1].click();
+    // 稍微等一下让切换生效
+    await sleep(500);
+  }
+}
+
+// 恢复画质
+async function restoreQuality() {
+  // 如果之前没保存画质信息，就不操作
+  if (!pageState.originalQualityText) return;
+
+  const qualityBtn = document.querySelector('.bilibili-player-video-btn-quality-name');
+  if (!qualityBtn) return;
+
+  // 如果当前画质已经是原来的画质（用户手动切回来了，或者没变），就不操作
+  if (qualityBtn.textContent.trim() === pageState.originalQualityText) return;
+
+  // 打开菜单
+  qualityBtn.click();
+  await sleep(100);
+
+  // 遍历找到原来的画质选项并点击
+  const qualityItems = document.querySelectorAll('.bilibili-player-video-quality-menu-item');
+  for (const item of qualityItems) {
+    if (item.textContent.trim() === pageState.originalQualityText) {
+      item.click();
+      break;
     }
   }
+}
+
+// 开启听歌模式（画面隐藏，声音继续）
+function enableAudioOnlyMode() {
+  const video = pageState.videoElement;
+  if (!video) return;
+
+  // 保存原始样式，以便恢复
+  pageState.originalStyle = video.style.cssText;
+
+  // 关键Hack：
+  // 1. 确保没有暂停
+  if (video.paused) video.play();
+  
+  // 2. 把视频移出视口
+  video.style.position = 'fixed';
+  video.style.top = '-9999px';
+  video.style.left = '-9999px';
+  video.style.width = '1px';
+  video.style.height = '1px';
+  video.style.opacity = '0';
+
+  // 3. 把播放器区域涂黑，假装视频暂停了
+  const playerWrap = document.querySelector('.bilibili-player-video-wrap') || 
+                     document.querySelector('#bilibili-player');
+  if (playerWrap) {
+    pageState.originalPlayerBg = playerWrap.style.background;
+    playerWrap.style.background = '#000';
+  }
+}
+
+// 关闭听歌模式（恢复画面）
+function disableAudioOnlyMode() {
+  const video = pageState.videoElement;
+  if (!video) return;
+
+  // 恢复视频样式
+  if (pageState.originalStyle) {
+    video.style.cssText = pageState.originalStyle;
+  } else {
+    video.style.position = '';
+    video.style.top = '';
+    video.style.left = '';
+    video.style.width = '';
+    video.style.height = '';
+    video.style.opacity = '';
+  }
+
+  // 恢复播放器背景
+  const playerWrap = document.querySelector('.bilibili-player-video-wrap') || 
+                     document.querySelector('#bilibili-player');
+  if (playerWrap && pageState.originalPlayerBg !== undefined) {
+    playerWrap.style.background = pageState.originalPlayerBg;
+  }
+}
+
+// 辅助函数：延时
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // 保存弹幕状态

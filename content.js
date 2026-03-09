@@ -111,6 +111,8 @@ function handleMessage(message) {
 async function switchToBackground() {
   if (!pageState.videoElement) return;
 
+  console.log('省流模式：窗口最小化，开始切换低画质');
+
   // 1. 保存当前播放状态
   pageState.wasPlaying = !pageState.videoElement.paused;
   pageState.playbackTime = pageState.videoElement.currentTime;
@@ -132,6 +134,8 @@ async function switchToBackground() {
 
 // 切换到前台模式
 function switchToForeground() {
+  console.log('省流模式：窗口恢复，开始恢复画质');
+
   // 1. 关闭"听歌模式"，恢复画面显示
   disableAudioOnlyMode();
 
@@ -149,29 +153,27 @@ function switchToForeground() {
 
 // 切换到最低画质
 async function switchToLowQuality() {
-  // === B站适配 ===
-  const qualityBtn = document.querySelector('.bilibili-player-video-btn-quality-name');
-  if (!qualityBtn) return;
-
-  // 1. 保存当前的画质文字（用于恢复）
-  pageState.originalQualityText = qualityBtn.textContent.trim();
-
-  // 如果已经是最低画质，就不折腾了
-  if (pageState.originalQualityText.includes('流畅') || pageState.originalQualityText.includes('360P')) {
+  const qualityBtn = document.querySelector('.bpx-player-ctrl-quality-result');
+  if (!qualityBtn) {
+    console.log('省流模式：找不到画质按钮');
     return;
   }
 
-  // 2. 点击打开画质菜单
+  // 点击打开画质列表
   qualityBtn.click();
-  await sleep(100); // 等菜单弹出
+  await sleep(300);
 
-  // 3. 找到所有选项，点击最后一个（通常是最低画质）
-  const qualityItems = document.querySelectorAll('.bilibili-player-video-quality-menu-item');
-  if (qualityItems.length > 0) {
-    // 点击最后一个
-    qualityItems[qualityItems.length - 1].click();
-    // 稍微等一下让切换生效
-    await sleep(500);
+  // 等待菜单完全展开
+  await waitForElement('.bpx-player-ctrl-quality-menu-item', 1000);
+
+  // 直接点击倒数第二个按钮（你的发现！）
+  const qualityItems = document.querySelectorAll('.bpx-player-ctrl-quality-menu-item');
+  if (qualityItems.length >= 2) {
+    const targetItem = qualityItems[qualityItems.length - 2];
+    console.log('省流模式：切换到最低画质', targetItem.textContent.trim());
+    targetItem.click();
+  } else {
+    console.log('省流模式：画质选项不足，无法切换');
   }
 }
 
@@ -180,7 +182,7 @@ async function restoreQuality() {
   // 如果之前没保存画质信息，就不操作
   if (!pageState.originalQualityText) return;
 
-  const qualityBtn = document.querySelector('.bilibili-player-video-btn-quality-name');
+  const qualityBtn = document.querySelector('.bpx-player-ctrl-quality-result');
   if (!qualityBtn) return;
 
   // 如果当前画质已经是原来的画质（用户手动切回来了，或者没变），就不操作
@@ -188,12 +190,17 @@ async function restoreQuality() {
 
   // 打开菜单
   qualityBtn.click();
-  await sleep(100);
+  await sleep(300);
 
   // 遍历找到原来的画质选项并点击
-  const qualityItems = document.querySelectorAll('.bilibili-player-video-quality-menu-item');
+  const qualityItems = document.querySelectorAll(`
+    .bpx-player-ctrl-quality-menu-item,
+    [class*="quality-menu-item"]
+  `);
+  
   for (const item of qualityItems) {
     if (item.textContent.trim() === pageState.originalQualityText) {
+      console.log('省流模式：恢复画质到', pageState.originalQualityText);
       item.click();
       break;
     }
@@ -257,6 +264,23 @@ function disableAudioOnlyMode() {
 // 辅助函数：延时
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 辅助函数：等待元素出现
+function waitForElement(selector, timeout = 500) {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const interval = setInterval(() => {
+      const element = document.querySelector(selector);
+      if (element) {
+        clearInterval(interval);
+        resolve(element);
+      } else if (Date.now() - startTime > timeout) {
+        clearInterval(interval);
+        resolve(null);
+      }
+    }, 50);
+  });
 }
 
 // 保存弹幕状态

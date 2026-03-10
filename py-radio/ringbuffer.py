@@ -1,6 +1,7 @@
 import threading
 import collections
 import time
+import subprocess
 
 class AudioRingBuffer:
     def __init__(self, max_size=1024*1024*10):
@@ -10,10 +11,45 @@ class AudioRingBuffer:
         self.lock = threading.Lock()
         self.not_empty = threading.Condition(self.lock)  # 用于通知读取线程有新数据可读（条件变量）
         self.monitor_thread = False
-    
+        self.playing = False
+
+
+
+
+    def start_decode(self, url, referer="https://www.bilibili.com") :
+        # 启动 FFmpeg 进程，将音频流转码为 PCM 并写入 RingBuffer
+        cmd = [
+            'ffmpeg',
+            '-headers', f'Referer: {referer}',
+            '-i', url,                 # 输入：B站音频流 URL
+            '-f', 's16le',             # 输出格式：16-bit Little-Endian PCM
+            '-acodec', 'pcm_s16le',    # 编解码器
+            '-ar', '44100',            # 采样率
+            '-ac', '2',                # 声道数
+            '-'                        # 输出到 stdout
+        ]
+        self.ffmpeg_process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE,    
+            stderr=subprocess.PIPE     
+        )
+        self.playing = True
+            
+    def _produce_loop(self):
+        # 从 FFmpeg stdout 读取 PCM 数据，写入 RingBuffer
+        chunk_size = 4096  #4KB
+        while self.playing:
+            chunk = self.ffmpeg_process.stdout.read(chunk_size)
+            if not chunk:
+                break  # 解码退出
+            self.buffer.write(chunk)
+        self.playing = False
+        self.ffmpeg_process.stdout.close()
+
+
     # 条件变量写法while(条件不符合) wait();
     def write(self, chunk):
-        with self.lock:
+        with self.not_empty:
             while self.size + len(chunk) > self.max_size:
                 # lru - remove oldest data if needed
                 if self.buffer:
@@ -25,11 +61,12 @@ class AudioRingBuffer:
             self.size += len(chunk)
             # 通知读取线程有新数据可读
             self.not_empty.notify_all()
-    
-    def read(self, size):
+
+    def read(self, size, timeout=None):
         with self.not_empty:
-            if not self.buffer:
-                return None
+            while not self.buffer:
+                if not self.not_empty.wait(timeout=timeout):
+                     return None 
             
             result = bytearray()
             remaining = size

@@ -35,6 +35,7 @@ const { videoInfo } = storeToRefs(store)
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 280px;
+  text-shadow: 0 0 10px rgba(232, 121, 249, 0.3);
 }
 
 .video-meta {
@@ -42,16 +43,16 @@ const { videoInfo } = storeToRefs(store)
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(232, 121, 249, 0.6);
 }
 
 .separator {
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(232, 121, 249, 0.3);
 }
 
 .bvid {
   font-family: 'SF Mono', 'Consolas', monospace;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(232, 121, 249, 0.5);
 }
 </style>

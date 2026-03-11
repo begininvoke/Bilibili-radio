@@ -56,10 +56,11 @@ function handleSeek(event: MouseEvent) {
 
 .time-display {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(232, 121, 249, 0.8);
   min-width: 45px;
   text-align: center;
   font-family: 'SF Mono', 'Consolas', monospace;
+  text-shadow: 0 0 8px rgba(232, 121, 249, 0.4);
 }
 
 .progress-container {
@@ -74,10 +75,11 @@ function handleSeek(event: MouseEvent) {
 .progress-track {
   width: 100%;
   height: 4px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
   position: relative;
   overflow: hidden;
+  box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.3);
 }
 
 .progress-fill {
@@ -85,9 +87,10 @@ function handleSeek(event: MouseEvent) {
   top: 0;
   left: 0;
   height: 100%;
-  background: linear-gradient(90deg, #00c7d6, #00e5ff);
-  border-radius: 2px;
+  background: linear-gradient(90deg, #a855f7, #e879f9, #f0abfc);
+  border-radius: 4px;
   transition: width 0.1s ease;
+  box-shadow: 0 0 10px rgba(232, 121, 249, 0.6);
 }
 
 .progress-buffer {
@@ -95,21 +98,25 @@ function handleSeek(event: MouseEvent) {
   top: 0;
   left: 0;
   height: 100%;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
+  background: rgba(232, 121, 249, 0.2);
+  border-radius: 4px;
   transition: width 0.3s ease;
 }
 
 .progress-thumb {
   position: absolute;
-  width: 12px;
-  height: 12px;
-  background: #00e5ff;
+  width: 14px;
+  height: 14px;
+  background: linear-gradient(135deg, #e879f9, #f0abfc);
   border-radius: 50%;
   transform: translateX(-50%);
-  box-shadow: 0 0 8px rgba(0, 229, 255, 0.5);
-  transition: left 0.1s ease;
+  box-shadow: 
+    0 0 10px rgba(232, 121, 249, 0.8),
+    0 0 20px rgba(168, 85, 247, 0.5),
+    inset 0 0 5px rgba(255, 255, 255, 0.3);
+  transition: left 0.1s ease, transform 0.2s ease, box-shadow 0.2s ease;
   pointer-events: none;
+  border: 2px solid rgba(255, 255, 255, 0.5);
 }
 
 .progress-container:hover .progress-track {
@@ -117,6 +124,10 @@ function handleSeek(event: MouseEvent) {
 }
 
 .progress-container:hover .progress-thumb {
-  transform: translateX(-50%) scale(1.2);
+  transform: translateX(-50%) scale(1.3);
+  box-shadow: 
+    0 0 15px rgba(232, 121, 249, 1),
+    0 0 30px rgba(168, 85, 247, 0.7),
+    inset 0 0 5px rgba(255, 255, 255, 0.4);
 }
 </style>

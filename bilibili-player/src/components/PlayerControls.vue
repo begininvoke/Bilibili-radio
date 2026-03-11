@@ -1,7 +1,7 @@
 <template>
   <div class="player-controls">
     <button 
-      class="control-btn" 
+      class="control-btn play-btn" 
       :class="{ active: isPlaying }"
       @click="togglePlayPause"
       :disabled="isLoading || hasError || !videoInfo"
@@ -43,21 +43,28 @@ const { togglePlayPause, stop } = store
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  border: none;
-  background: rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(232, 121, 249, 0.5);
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.3), rgba(255, 105, 180, 0.3));
   backdrop-filter: blur(10px);
   color: #fff;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: all 0.3s ease;
   font-size: 18px;
+  box-shadow: 
+    0 0 15px rgba(168, 85, 247, 0.3),
+    0 0 30px rgba(255, 105, 180, 0.15);
 }
 
 .control-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.25);
-  transform: scale(1.05);
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.5), rgba(255, 105, 180, 0.5));
+  transform: scale(1.08);
+  box-shadow: 
+    0 0 20px rgba(168, 85, 247, 0.5),
+    0 0 40px rgba(255, 105, 180, 0.3);
+  border-color: rgba(232, 121, 249, 0.8);
 }
 
 .control-btn:active:not(:disabled) {
@@ -67,14 +74,20 @@ const { togglePlayPause, stop } = store
 .control-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .control-btn.active {
-  background: rgba(0, 199, 214, 0.4);
+  background: linear-gradient(135deg, rgba(232, 121, 249, 0.6), rgba(255, 105, 180, 0.6));
+  border-color: #e879f9;
+  box-shadow: 
+    0 0 20px rgba(232, 121, 249, 0.6),
+    0 0 40px rgba(255, 105, 180, 0.4),
+    inset 0 0 15px rgba(255, 255, 255, 0.1);
 }
 
 .control-btn.active:hover:not(:disabled) {
-  background: rgba(0, 199, 214, 0.6);
+  background: linear-gradient(135deg, rgba(232, 121, 249, 0.8), rgba(255, 105, 180, 0.8));
 }
 
 .stop-btn {
@@ -87,6 +100,7 @@ const { togglePlayPause, stop } = store
   display: flex;
   align-items: center;
   justify-content: center;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
 }
 
 .icon.loading {

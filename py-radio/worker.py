@@ -1,5 +1,5 @@
 import re
-import subprocess
+
 from ringbuffer import AudioRingBuffer  
 from flask import Flask
 from Result import Result
@@ -29,10 +29,6 @@ def extract_bvid_from_url(url):
     else:
         return None
     
-def run_ffmpeg_command(cmd):
-    subprocess.run(cmd, shell=True, check=True)     
-    pass
-
 @app.route('/get_video_info/<bvid>', methods=['GET'])
 def get_video_info(bvid):
     if not is_valid_bvid(bvid):
@@ -85,13 +81,15 @@ def download():
 
 
 def download_worker(url, headers):
-    audio_buffer = AudioRingBuffer()  
+    audio_buffer = AudioRingBuffer()  # 使用完善的AudioRingBuffer
     resp = requests.get(url, headers=headers, stream=True)
     if resp.status_code == 200:
-        # 这个iter_content方法会分块下载数据，chunk_size可以根据需要调整(基本相当于stream=True的固定搭配)
+        audio_buffer.start_monitoring(interval=3)  # 启动监控线程，3秒刷新一次
         for chunk in resp.iter_content(chunk_size=8192):
             if chunk:
-                # 将下载的音频数据写入到 RingBuffer 中
+                # 阻塞式写入，自动丢弃最老数据，通知消费者
                 audio_buffer.write(chunk)
+        # 下载结束后可清理或停止监控
+        audio_buffer.stop()
     else:
         print(f"下载失败，状态码: {resp.status_code}")

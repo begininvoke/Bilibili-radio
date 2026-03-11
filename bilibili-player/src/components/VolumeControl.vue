@@ -57,23 +57,27 @@ function handleVolumeChange(event: Event) {
   height: 32px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(232, 121, 249, 0.8);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 18px;
-  transition: color 0.2s ease;
+  transition: all 0.2s ease;
+  border-radius: 50%;
 }
 
 .volume-btn:hover {
-  color: #fff;
+  color: #e879f9;
+  background: rgba(232, 121, 249, 0.15);
+  box-shadow: 0 0 15px rgba(232, 121, 249, 0.3);
 }
 
 .icon {
   display: flex;
   align-items: center;
   justify-content: center;
+  filter: drop-shadow(0 0 5px rgba(232, 121, 249, 0.5));
 }
 
 .volume-slider-container {
@@ -85,35 +89,50 @@ function handleVolumeChange(event: Event) {
   appearance: none;
   width: 100%;
   height: 4px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
   outline: none;
   cursor: pointer;
+  box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.3);
 }
 
 .volume-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 12px;
-  height: 12px;
-  background: #00e5ff;
+  width: 14px;
+  height: 14px;
+  background: linear-gradient(135deg, #e879f9, #f0abfc);
   border-radius: 50%;
   cursor: pointer;
-  box-shadow: 0 0 6px rgba(0, 229, 255, 0.4);
-  transition: transform 0.2s ease;
+  box-shadow: 
+    0 0 10px rgba(232, 121, 249, 0.8),
+    0 0 20px rgba(168, 85, 247, 0.4);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border: 2px solid rgba(255, 255, 255, 0.5);
 }
 
 .volume-slider::-webkit-slider-thumb:hover {
   transform: scale(1.2);
+  box-shadow: 
+    0 0 15px rgba(232, 121, 249, 1),
+    0 0 30px rgba(168, 85, 247, 0.6);
 }
 
 .volume-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  background: #00e5ff;
+  width: 14px;
+  height: 14px;
+  background: linear-gradient(135deg, #e879f9, #f0abfc);
   border-radius: 50%;
   cursor: pointer;
-  border: none;
-  box-shadow: 0 0 6px rgba(0, 229, 255, 0.4);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 
+    0 0 10px rgba(232, 121, 249, 0.8),
+    0 0 20px rgba(168, 85, 247, 0.4);
+}
+
+.volume-slider::-moz-range-track {
+  background: rgba(255, 255, 255, 0.15);
+  height: 4px;
+  border-radius: 4px;
 }
 </style>

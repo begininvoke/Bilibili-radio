@@ -1,7 +1,6 @@
 import threading
 import subprocess
 import time
-import struct
 from typing import Optional, Callable
 from enum import Enum
 from dataclasses import dataclass
@@ -145,7 +144,7 @@ class AudioConsumer:
             self._set_state(ConsumerState.PLAYING)
 
             cmd = self._build_ffmpeg_command(self._audio_url, self._bvid)
-            print(f"[Consumer] Starting FFmpeg with command: {' '.join(cmd[:6])}...")
+            print(f"[Consumer] Starting FFmpeg...")
             
             self._ffmpeg_process = subprocess.Popen(
                 cmd,
@@ -154,25 +153,18 @@ class AudioConsumer:
                 bufsize=self.chunk_size * 4,
             )
             print(f"[Consumer] FFmpeg process started, PID: {self._ffmpeg_process.pid}")
-
             bytes_per_second = self.sample_rate * self.channels * 2
             chunk_count = 0
             last_progress_time = time.time()
-            last_send_time = time.time()
-            chunks_per_second = bytes_per_second / self.chunk_size
-            min_interval = 0.8 / chunks_per_second
+            target_chunk_interval = self.chunk_size / bytes_per_second
+            send_buffer_size = 5
 
             while not self._stop_event.is_set():
                 while self._pause_event.is_set():
                     if self._stop_event.is_set():
                         return
                     time.sleep(0.05)
-
                 try:
-                    elapsed = time.time() - last_send_time
-                    if elapsed < min_interval:
-                        time.sleep(min_interval - elapsed)
-
                     chunk = self._ffmpeg_process.stdout.read(self.chunk_size)
                     if not chunk:
                         if self._ffmpeg_process.poll() is not None:
@@ -182,41 +174,34 @@ class AudioConsumer:
                                 print(f"[Consumer] FFmpeg stderr: {stderr_output[:500]}")
                             break
                         continue
-
                     chunk_count += 1
                     self._current_time += len(chunk) / bytes_per_second
-                    last_send_time = time.time()
-
                     if self._on_data:
                         self._on_data(chunk)
-
+                    if chunk_count % send_buffer_size == 0:
+                        sleep_time = target_chunk_interval * send_buffer_size * 0.9
+                        time.sleep(sleep_time)
                     if time.time() - last_progress_time >= 0.5:
                         self._notify_progress()
                         last_progress_time = time.time()
-                        if chunk_count % 50 == 0:
-                            print(f"[Consumer] Sent {chunk_count} chunks, time: {self._current_time:.1f}s")
-
+                        print(f"[Consumer] Sent {chunk_count} chunks, time: {self._current_time:.1f}s")
                 except Exception as e:
                     self._error_message = f"读取音频数据失败: {str(e)}"
                     print(f"[Consumer] Error reading audio data: {e}")
                     self._set_state(ConsumerState.ERROR)
                     break
-
             print(f"[Consumer] Playback loop ended, total chunks: {chunk_count}, time: {self._current_time:.1f}s")
             self._set_state(ConsumerState.STOPPED)
-
         except FileNotFoundError as e:
             self._error_message = "FFmpeg未安装或不在PATH中"
             print(f"[Consumer] FFmpeg not found: {e}")
             self._set_state(ConsumerState.ERROR)
-
         except Exception as e:
             self._error_message = f"播放错误: {str(e)}"
             print(f"[Consumer] Playback error: {e}")
             import traceback
             traceback.print_exc()
             self._set_state(ConsumerState.ERROR)
-
         finally:
             self._cleanup_ffmpeg()
             self._notify_progress()

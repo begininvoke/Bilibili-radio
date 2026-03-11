@@ -45,29 +45,32 @@ function formatSpeed(bytesPerSecond: number): string {
 
 .status-message {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(232, 121, 249, 0.7);
+  text-shadow: 0 0 8px rgba(232, 121, 249, 0.3);
 }
 
 .error-message {
   font-size: 12px;
-  color: #ff6b6b;
-  background: rgba(255, 107, 107, 0.1);
+  color: #ff6b9d;
+  background: rgba(255, 107, 157, 0.1);
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 107, 157, 0.2);
 }
 
 .download-info {
   display: flex;
   gap: 16px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(232, 121, 249, 0.5);
 }
 
 .speed {
-  color: #00e5ff;
+  color: #e879f9;
+  text-shadow: 0 0 8px rgba(232, 121, 249, 0.4);
 }
 
 .buffer-status {
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(232, 121, 249, 0.6);
 }
 </style>

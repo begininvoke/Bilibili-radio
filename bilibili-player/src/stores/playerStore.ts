@@ -1,8 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { VideoInfo, PlayerStatus, DownloadProgress, PlaybackProgress } from '@/types'
+import type { VideoInfo, PlayerStatus, DownloadProgress, PlaybackProgress, AudioStreamInfo } from '@/types'
 import { wsClient } from '@/audio/WsClient'
-import { audioPlayer } from '@/audio/AudioPlayer'
+import { streamingAudioPlayer } from '@/audio/StreamingAudioPlayer'
+
+interface StreamStats {
+  total_bytes: number
+  session_bytes: number
+  elapsed_seconds: number
+  bytes_per_second: number
+  total_mb: number
+  session_mb: number
+}
 
 export const usePlayerStore = defineStore('player', () => {
   const status = ref<PlayerStatus>('idle')
@@ -17,6 +26,9 @@ export const usePlayerStore = defineStore('player', () => {
   const downloadProgress = ref<DownloadProgress | null>(null)
   const isConnected = ref(false)
   const isInitialized = ref(false)
+  const streamStats = ref<StreamStats | null>(null)
+
+  let statsInterval: ReturnType<typeof setInterval> | null = null
 
   const formattedCurrentTime = computed(() => formatTime(currentTime.value))
   const formattedDuration = computed(() => formatTime(duration.value))
@@ -29,6 +41,24 @@ export const usePlayerStore = defineStore('player', () => {
   const isPaused = computed(() => status.value === 'paused')
   const isLoading = computed(() => status.value === 'loading')
   const hasError = computed(() => status.value === 'error')
+  const formattedStreamStats = computed(() => {
+    if (!streamStats.value) return null
+    return {
+      sessionMB: streamStats.value.session_mb.toFixed(2),
+      totalMB: streamStats.value.total_mb.toFixed(2),
+      speed: formatSpeed(streamStats.value.bytes_per_second)
+    }
+  })
+
+  function formatSpeed(bytesPerSecond: number): string {
+    if (bytesPerSecond < 1024) {
+      return `${bytesPerSecond.toFixed(0)} B/s`
+    } else if (bytesPerSecond < 1024 * 1024) {
+      return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`
+    } else {
+      return `${(bytesPerSecond / (1024 * 1024)).toFixed(2)} MB/s`
+    }
+  }
 
   function formatTime(seconds: number): string {
     const mins = Math.floor(seconds / 60)
@@ -36,22 +66,73 @@ export const usePlayerStore = defineStore('player', () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
 
+  async function fetchStreamStats() {
+    try {
+      const response = await fetch('http://localhost:5000/api/stream/stats')
+      const data = await response.json()
+      if (data.success) {
+        streamStats.value = data.data
+      }
+    } catch (error) {
+      console.error('Failed to fetch stream stats:', error)
+    }
+  }
+
+  function startStatsPolling() {
+    if (statsInterval) {
+      clearInterval(statsInterval)
+    }
+    statsInterval = setInterval(fetchStreamStats, 1000)
+  }
+
+  function stopStatsPolling() {
+    if (statsInterval) {
+      clearInterval(statsInterval)
+      statsInterval = null
+    }
+  }
+
   async function initialize() {
     if (isInitialized.value) return
 
-    const playerReady = await audioPlayer.init()
+    const playerReady = streamingAudioPlayer.init()
     if (!playerReady) {
       setError('音频播放器初始化失败')
       return
     }
 
-    audioPlayer.onStateChange((playing) => {
-      if (playing && status.value !== 'loading') {
+    streamingAudioPlayer.onStateChange((playing) => {
+      if (playing) {
         status.value = 'playing'
+        startStatsPolling()
+      } else {
+        if (status.value === 'playing') {
+          status.value = 'paused'
+        }
       }
     })
 
-    audioPlayer.setVolume(volume.value)
+    streamingAudioPlayer.onTimeUpdate((time, dur) => {
+      currentTime.value = time
+      if (dur > 0 && dur !== duration.value) {
+        duration.value = dur
+      }
+    })
+
+    streamingAudioPlayer.onEnded(() => {
+      status.value = 'idle'
+      currentTime.value = 0
+    })
+
+    streamingAudioPlayer.onError((error) => {
+      setError(error)
+    })
+
+    streamingAudioPlayer.onCanPlay(() => {
+      streamingAudioPlayer.play()
+    })
+
+    streamingAudioPlayer.setVolume(volume.value)
 
     wsClient.setCallbacks({
       onVideoInfo: (info: VideoInfo) => {
@@ -60,8 +141,8 @@ export const usePlayerStore = defineStore('player', () => {
         status.value = 'loading'
         statusMessage.value = '正在加载音频...'
       },
-      onAudioData: (data) => {
-        audioPlayer.handleAudioData(data)
+      onAudioStream: (streamInfo: AudioStreamInfo) => {
+        streamingAudioPlayer.loadStream(streamInfo)
       },
       onDownloadProgress: (progress: DownloadProgress) => {
         downloadProgress.value = progress
@@ -130,7 +211,7 @@ export const usePlayerStore = defineStore('player', () => {
     statusMessage.value = '正在获取视频信息...'
     currentTime.value = 0
     
-    audioPlayer.stopPlayback()
+    streamingAudioPlayer.stop()
     console.log('[playerStore] calling wsClient.playVideo')
     wsClient.playVideo(input)
   }
@@ -144,20 +225,20 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function pause() {
-    wsClient.pause()
-    audioPlayer.pausePlayback()
+    streamingAudioPlayer.pause()
     status.value = 'paused'
   }
 
   function resume() {
-    wsClient.resume()
-    audioPlayer.resumePlayback()
+    streamingAudioPlayer.resume()
     status.value = 'playing'
   }
 
   function stop() {
     wsClient.stop()
-    audioPlayer.stopPlayback()
+    streamingAudioPlayer.stop()
+    stopStatsPolling()
+    streamStats.value = null
     status.value = 'idle'
     currentTime.value = 0
     videoInfo.value = null
@@ -167,22 +248,22 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function seek(timeSeconds: number) {
-    wsClient.seek(timeSeconds)
+    streamingAudioPlayer.seek(timeSeconds)
     currentTime.value = timeSeconds
   }
 
   function setVolume(value: number) {
     volume.value = value
-    audioPlayer.setVolume(value)
+    streamingAudioPlayer.setVolume(value)
   }
 
   function toggleMute() {
-    isMuted.value = audioPlayer.toggleMute()
+    isMuted.value = streamingAudioPlayer.toggleMute()
   }
 
   function disconnect() {
     wsClient.disconnect()
-    audioPlayer.destroy()
+    streamingAudioPlayer.destroy()
     isInitialized.value = false
     isConnected.value = false
     status.value = 'idle'
@@ -201,6 +282,7 @@ export const usePlayerStore = defineStore('player', () => {
     downloadProgress,
     isConnected,
     isInitialized,
+    streamStats,
     formattedCurrentTime,
     formattedDuration,
     progress,
@@ -209,6 +291,7 @@ export const usePlayerStore = defineStore('player', () => {
     isPaused,
     isLoading,
     hasError,
+    formattedStreamStats,
     initialize,
     playVideo,
     togglePlayPause,

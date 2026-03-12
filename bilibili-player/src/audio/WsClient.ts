@@ -2,6 +2,7 @@ import { io, Socket } from 'socket.io-client'
 import type {
   VideoInfo,
   AudioDataPacket,
+  AudioStreamInfo,
   DownloadProgress,
   PlaybackProgress,
   BufferStats
@@ -9,6 +10,7 @@ import type {
 
 type VideoInfoCallback = (info: VideoInfo) => void
 type AudioDataCallback = (data: AudioDataPacket) => void
+type AudioStreamCallback = (data: AudioStreamInfo) => void
 type DownloadProgressCallback = (progress: DownloadProgress) => void
 type PlaybackProgressCallback = (progress: PlaybackProgress) => void
 type StatusCallback = (message: string) => void
@@ -21,6 +23,7 @@ class WebSocketClient {
 
   private onVideoInfo: VideoInfoCallback | null = null
   private onAudioData: AudioDataCallback | null = null
+  private onAudioStream: AudioStreamCallback | null = null
   private onDownloadProgress: DownloadProgressCallback | null = null
   private onPlaybackProgress: PlaybackProgressCallback | null = null
   private onStatus: StatusCallback | null = null
@@ -60,6 +63,12 @@ class WebSocketClient {
       this.socket.on('video_info', (data: VideoInfo) => {
         if (this.onVideoInfo) {
           this.onVideoInfo(data)
+        }
+      })
+
+      this.socket.on('audio_stream', (data: AudioStreamInfo) => {
+        if (this.onAudioStream) {
+          this.onAudioStream(data)
         }
       })
 
@@ -122,6 +131,7 @@ class WebSocketClient {
   setCallbacks(options: {
     onVideoInfo?: VideoInfoCallback
     onAudioData?: AudioDataCallback
+    onAudioStream?: AudioStreamCallback
     onDownloadProgress?: DownloadProgressCallback
     onPlaybackProgress?: PlaybackProgressCallback
     onStatus?: StatusCallback
@@ -131,6 +141,7 @@ class WebSocketClient {
   }) {
     this.onVideoInfo = options.onVideoInfo || null
     this.onAudioData = options.onAudioData || null
+    this.onAudioStream = options.onAudioStream || null
     this.onDownloadProgress = options.onDownloadProgress || null
     this.onPlaybackProgress = options.onPlaybackProgress || null
     this.onStatus = options.onStatus || null

@@ -8,6 +8,15 @@
       ⚠️ {{ errorMessage }}
     </div>
     
+    <div v-if="formattedStreamStats && isPlaying" class="stream-stats">
+      <span class="stat-item">
+        📊 流量: {{ formattedStreamStats.sessionMB }} MB
+      </span>
+      <span class="stat-item speed">
+        ⚡ {{ formattedStreamStats.speed }}
+      </span>
+    </div>
+    
     <div v-if="downloadProgress && isLoading" class="download-info">
       <span class="speed">{{ formatSpeed(downloadProgress.speed) }}</span>
       <span class="buffer-status">
@@ -22,7 +31,7 @@ import { usePlayerStore } from '@/stores/playerStore'
 import { storeToRefs } from 'pinia'
 
 const store = usePlayerStore()
-const { statusMessage, errorMessage, downloadProgress, bufferLevel, isLoading } = storeToRefs(store)
+const { statusMessage, errorMessage, downloadProgress, bufferLevel, isLoading, isPlaying, formattedStreamStats } = storeToRefs(store)
 
 function formatSpeed(bytesPerSecond: number): string {
   if (bytesPerSecond < 1024) {
@@ -56,6 +65,27 @@ function formatSpeed(bytesPerSecond: number): string {
   padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid rgba(255, 107, 157, 0.2);
+}
+
+.stream-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  color: rgba(232, 121, 249, 0.7);
+  background: rgba(232, 121, 249, 0.05);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-item.speed {
+  color: #e879f9;
+  text-shadow: 0 0 8px rgba(232, 121, 249, 0.4);
 }
 
 .download-info {

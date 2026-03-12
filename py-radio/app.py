@@ -1,7 +1,9 @@
 import json
 import time
 import base64
-from flask import Flask, request, jsonify
+import requests
+import threading
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from typing import Optional
@@ -23,6 +25,13 @@ consumer: Optional[AudioConsumer] = None
 
 current_video_info: Optional[VideoInfo] = None
 current_audio_info: Optional[AudioStreamInfo] = None
+
+stream_stats = {
+    "total_bytes": 0,
+    "start_time": None,
+    "current_session_bytes": 0,
+}
+stream_stats_lock = threading.Lock()
 
 
 def init_player():
@@ -186,6 +195,104 @@ def stop_player():
     return jsonify({"success": True})
 
 
+@app.route("/api/stream/<bvid>", methods=["GET"])
+def stream_audio(bvid: str):
+    global current_audio_info, stream_stats
+
+    if not current_audio_info:
+        return jsonify({"success": False, "error": "No audio loaded"}), 400
+
+    audio_url = current_audio_info.url
+
+    headers = {
+        "Referer": f"https://www.bilibili.com/video/{bvid}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+
+    range_header = request.headers.get("Range")
+    if range_header:
+        headers["Range"] = range_header
+
+    try:
+        resp = requests.get(
+            audio_url,
+            headers=headers,
+            stream=True,
+            timeout=30,
+        )
+
+        def generate():
+            total_sent = 0
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+                    total_sent += len(chunk)
+                    with stream_stats_lock:
+                        stream_stats["total_bytes"] += len(chunk)
+                        stream_stats["current_session_bytes"] += len(chunk)
+
+        response_headers = {}
+        if "Content-Type" in resp.headers:
+            response_headers["Content-Type"] = resp.headers["Content-Type"]
+        if "Content-Length" in resp.headers:
+            response_headers["Content-Length"] = resp.headers["Content-Length"]
+        if "Content-Range" in resp.headers:
+            response_headers["Content-Range"] = resp.headers["Content-Range"]
+        if "Accept-Ranges" in resp.headers:
+            response_headers["Accept-Ranges"] = resp.headers["Accept-Ranges"]
+        else:
+            response_headers["Accept-Ranges"] = "bytes"
+
+        status_code = resp.status_code
+
+        return Response(
+            generate(),
+            status=status_code,
+            headers=response_headers,
+        )
+
+    except Exception as e:
+        print(f"[stream_audio] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/stream/stats", methods=["GET"])
+def get_stream_stats():
+    global stream_stats
+    with stream_stats_lock:
+        stats = stream_stats.copy()
+    
+    elapsed = 0
+    if stats["start_time"]:
+        elapsed = time.time() - stats["start_time"]
+    
+    speed = 0
+    if elapsed > 0:
+        speed = stats["current_session_bytes"] / elapsed
+    
+    return jsonify({
+        "success": True,
+        "data": {
+            "total_bytes": stats["total_bytes"],
+            "session_bytes": stats["current_session_bytes"],
+            "elapsed_seconds": elapsed,
+            "bytes_per_second": speed,
+            "total_mb": round(stats["total_bytes"] / 1024 / 1024, 2),
+            "session_mb": round(stats["current_session_bytes"] / 1024 / 1024, 2),
+        }
+    })
+
+
+@app.route("/api/stream/stats/reset", methods=["POST"])
+def reset_stream_stats():
+    global stream_stats
+    with stream_stats_lock:
+        stream_stats["total_bytes"] = 0
+        stream_stats["current_session_bytes"] = 0
+        stream_stats["start_time"] = time.time()
+    return jsonify({"success": True})
+
+
 @socketio.on("connect")
 def handle_connect():
     print(f"Client connected: {request.sid}")
@@ -199,7 +306,7 @@ def handle_disconnect():
 
 @socketio.on("play_video")
 def handle_play_video(data):
-    global current_video_info, current_audio_info
+    global current_video_info, current_audio_info, stream_stats
 
     print(f"[play_video] 收到播放请求: {data}")
     input_str = data.get("input", "")
@@ -222,6 +329,10 @@ def handle_play_video(data):
         current_audio_info = bilibili_api.get_audio_stream(bvid, current_video_info.cid)
         print(f"[play_video] 获取音频流成功")
 
+        with stream_stats_lock:
+            stream_stats["current_session_bytes"] = 0
+            stream_stats["start_time"] = time.time()
+
         emit(
             "video_info",
             {
@@ -235,14 +346,18 @@ def handle_play_video(data):
 
         emit("status", {"message": "正在启动播放..."})
 
-        consumer.start(
-            audio_url=current_audio_info.url,
-            bvid=bvid,
-            duration=current_video_info.duration,
+        proxy_url = f"http://localhost:5000/api/stream/{bvid}"
+        emit(
+            "audio_stream",
+            {
+                "url": proxy_url,
+                "duration": current_video_info.duration,
+                "bitrate": current_audio_info.bitrate,
+                "sample_rate": current_audio_info.sample_rate,
+                "channels": current_audio_info.channels,
+            },
         )
-        print(f"[play_video] 消费者已启动")
-
-        emit("status", {"message": "播放已开始"})
+        print(f"[play_video] 已发送代理URL: {proxy_url}")
 
     except BilibiliAPIError as e:
         print(f"[play_video] API错误: {e}")

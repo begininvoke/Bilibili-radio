@@ -127,7 +127,7 @@ class BilibiliAPI:
             "bvid": bvid,
             "cid": cid,
             "qn": 16,
-            "fnval": 16 | 1024,
+            "fnval": 16,
             "fnver": 0,
             "fourk": 0,
         }

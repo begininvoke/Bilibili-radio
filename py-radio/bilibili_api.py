@@ -1,20 +1,9 @@
-import re
 import requests
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 from dataclasses import dataclass
-from enum import Enum
 
-
-class BilibiliAPIError(Exception):
-    pass
-
-
-class VideoNotFoundError(BilibiliAPIError):
-    pass
-
-
-class NetworkError(BilibiliAPIError):
-    pass
+from constant import HttpHeader, BilibiliAPI as APIConst
+from error_code import APIError
 
 
 @dataclass
@@ -40,33 +29,18 @@ class AudioStreamInfo:
 
 
 class BilibiliAPI:
-    VIDEO_INFO_API = "https://api.bilibili.com/x/web-interface/view"
-    PLAY_URL_API = "https://api.bilibili.com/x/player/playurl"
-
-    DEFAULT_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.bilibili.com",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
-
-    BV_PATTERN = re.compile(r"^(BV|bv)[0-9A-Za-z]{10}$")
-    URL_PATTERN = re.compile(
-        r"^(https?://)?(www\.)?bilibili\.com/video/(BV[0-9A-Za-z]{10})"
-    )
-
     def __init__(self, timeout: int = 10):
         self.timeout = timeout
         self.session = requests.Session()
-        self.session.headers.update(self.DEFAULT_HEADERS)
+        self.session.headers.update(HttpHeader.default_headers())
 
     @staticmethod
     def is_valid_bvid(bvid: str) -> bool:
-        return bool(BilibiliAPI.BV_PATTERN.match(bvid))
+        return bool(APIConst.BV_PATTERN.match(bvid))
 
     @staticmethod
     def extract_bvid(url: str) -> Optional[str]:
-        match = BilibiliAPI.URL_PATTERN.search(url)
+        match = APIConst.URL_PATTERN.search(url)
         return match.group(3) if match else None
 
     @staticmethod
@@ -83,14 +57,14 @@ class BilibiliAPI:
 
     def get_video_info(self, bvid: str) -> VideoInfo:
         if not self.is_valid_bvid(bvid):
-            raise ValueError(f"Invalid BVID format: {bvid}")
+            raise APIError.invalid_bvid(bvid)
 
         params = {"bvid": bvid}
-        headers = {**self.DEFAULT_HEADERS, "Referer": f"https://www.bilibili.com/video/{bvid}"}
+        headers = HttpHeader.video_headers(bvid)
 
         try:
             response = self.session.get(
-                self.VIDEO_INFO_API,
+                APIConst.VIDEO_INFO_URL,
                 params=params,
                 headers=headers,
                 timeout=self.timeout,
@@ -101,8 +75,8 @@ class BilibiliAPI:
             if data.get("code") != 0:
                 error_msg = data.get("message", "Unknown error")
                 if data.get("code") == -400:
-                    raise VideoNotFoundError(f"Video not found: {bvid}")
-                raise BilibiliAPIError(f"API error: {error_msg}")
+                    raise APIError.video_not_found(bvid)
+                raise APIError.api_error(error_msg)
 
             video_data = data.get("data", {})
             return VideoInfo(
@@ -115,13 +89,13 @@ class BilibiliAPI:
             )
 
         except requests.Timeout:
-            raise NetworkError(f"Request timeout for BVID: {bvid}")
+            raise APIError.request_timeout(bvid)
         except requests.RequestException as e:
-            raise NetworkError(f"Network error: {str(e)}")
+            raise APIError.network_error(str(e))
 
     def get_audio_stream(self, bvid: str, cid: int, quality: int = 30280) -> AudioStreamInfo:
         if not self.is_valid_bvid(bvid):
-            raise ValueError(f"Invalid BVID format: {bvid}")
+            raise APIError.invalid_bvid(bvid)
 
         params = {
             "bvid": bvid,
@@ -132,11 +106,11 @@ class BilibiliAPI:
             "fourk": 0,
         }
 
-        headers = {**self.DEFAULT_HEADERS, "Referer": f"https://www.bilibili.com/video/{bvid}"}
+        headers = HttpHeader.video_headers(bvid)
 
         try:
             response = self.session.get(
-                self.PLAY_URL_API,
+                APIConst.PLAY_URL,
                 params=params,
                 headers=headers,
                 timeout=self.timeout,
@@ -146,16 +120,16 @@ class BilibiliAPI:
 
             if data.get("code") != 0:
                 error_msg = data.get("message", "Unknown error")
-                raise BilibiliAPIError(f"API error: {error_msg}")
+                raise APIError.api_error(error_msg)
 
             play_data = data.get("data", {})
 
             if "dash" not in play_data:
-                raise BilibiliAPIError("No DASH stream available")
+                raise APIError.no_dash_stream()
 
             audio_streams = play_data.get("dash", {}).get("audio", [])
             if not audio_streams:
-                raise BilibiliAPIError("No audio stream found")
+                raise APIError.no_audio_stream()
 
             audio_stream = audio_streams[0]
 
@@ -171,9 +145,9 @@ class BilibiliAPI:
             )
 
         except requests.Timeout:
-            raise NetworkError(f"Request timeout for BVID: {bvid}")
+            raise APIError.request_timeout(bvid)
         except requests.RequestException as e:
-            raise NetworkError(f"Network error: {str(e)}")
+            raise APIError.network_error(str(e))
 
     def get_video_with_audio(self, input_str: str) -> tuple[VideoInfo, AudioStreamInfo]:
         bvid = self.parse_input(input_str)

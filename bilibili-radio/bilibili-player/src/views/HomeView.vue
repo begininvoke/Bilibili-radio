@@ -2,10 +2,9 @@
   <div class="page home">
     <header class="welcome">
       <h1>{{ greeting }}</h1>
-      <p class="sub">继续看看上次的内容吧</p>
+      <p class="sub">继续听上次没播完的内容</p>
     </header>
 
-    <!-- 继续播放 / 最近播放 快捷入口 -->
     <section v-if="recent.length" class="section">
       <SectionHeader title="最近播放">
         <template #extra>
@@ -14,61 +13,36 @@
       </SectionHeader>
       <div class="card-grid">
         <TrackCard
-          v-for="t in recent.slice(0, 5)"
-          :key="t.bvid"
-          :track="t"
-          @play="player.playTrack(t)"
+          v-for="track in recent.slice(0, 5)"
+          :key="track.trackId ?? track.bvid"
+          :track="track"
+          @play="player.playTrack(track)"
         />
       </div>
     </section>
 
-    <!-- 收藏夹快捷入口 -->
-    <section class="section">
-      <SectionHeader title="B站收藏夹">
-        <template #extra>
-          <RouterLink to="/favorites" class="more-link">全部收藏夹</RouterLink>
-        </template>
-      </SectionHeader>
-      <div class="fav-grid">
-        <RouterLink
-          v-for="f in favoriteFolders"
-          :key="f.id"
-          :to="`/favorites?folder=${f.id}`"
-          class="fav-entry"
-        >
-          <img :src="f.cover" :alt="f.title" loading="lazy" />
-          <div class="fav-info">
-            <span class="fav-title">{{ f.title }}</span>
-            <span class="fav-count">{{ f.count }} 个内容</span>
-          </div>
-        </RouterLink>
-      </div>
-    </section>
-
-    <!-- 为你推荐 -->
     <section class="section">
       <SectionHeader title="为你推荐" />
-      <div class="card-grid">
-        <TrackCard
-          v-for="t in recommendTracks"
-          :key="t.bvid"
-          :track="t"
-          @play="player.playTrack(t)"
-        />
-      </div>
+      <p class="pending-text">目前正在开发中，请您看看其他内容。</p>
     </section>
 
-    <!-- 热门视频 -->
     <section class="section">
-      <SectionHeader title="热门视频" />
-      <div class="card-grid">
-        <TrackCard
-          v-for="t in hotTracks"
-          :key="t.bvid"
-          :track="t"
-          @play="player.playTrack(t)"
-        />
+      <SectionHeader title="我的播放次数 Top 10" :count="playCountRanking.length" />
+      <div v-if="playCountRanking.length" class="rank-list">
+        <button
+          v-for="(track, i) in playCountRanking"
+          :key="track.trackId ?? `${track.bvid}:${track.cid ?? i}`"
+          class="rank-row"
+          @click="player.playTrack(track)"
+        >
+          <span class="rank-index">{{ i + 1 }}</span>
+          <img class="rank-cover" :src="mediaUrl(track.cover)" :alt="track.title" loading="lazy" />
+          <span class="rank-title" :title="track.title">{{ track.title }}</span>
+          <span class="rank-owner">{{ track.owner }}</span>
+          <span class="rank-count">已播放 {{ formatCount(track.recentPlayCount ?? 0) }} 次</span>
+        </button>
       </div>
+      <p v-else class="empty-text">暂无播放次数数据，先搜索或播放几首内容。</p>
     </section>
   </div>
 </template>
@@ -77,9 +51,11 @@
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import { mediaUrl } from '@/api/client'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
-import { recommendTracks, hotTracks, favoriteFolders } from '@/mock/data'
+import type { Track } from '@/types'
+import { formatCount } from '@/utils/format'
 import TrackCard from '@/components/TrackCard.vue'
 import SectionHeader from '@/components/base/SectionHeader.vue'
 
@@ -88,13 +64,30 @@ const library = useLibraryStore()
 const { recent } = storeToRefs(library)
 
 const greeting = computed(() => {
-  const h = new Date().getHours()
-  if (h < 6) return '夜深了'
-  if (h < 12) return '上午好'
-  if (h < 14) return '中午好'
-  if (h < 18) return '下午好'
+  const hour = new Date().getHours()
+  if (hour < 6) return '夜深了'
+  if (hour < 12) return '上午好'
+  if (hour < 14) return '中午好'
+  if (hour < 18) return '下午好'
   return '晚上好'
 })
+
+const playCountRanking = computed(() => {
+  return uniqueTracks(recent.value)
+    .filter((track) => Number.isFinite(track.recentPlayCount) && (track.recentPlayCount ?? 0) > 0)
+    .sort((a, b) => (b.recentPlayCount ?? 0) - (a.recentPlayCount ?? 0))
+    .slice(0, 10)
+})
+
+function uniqueTracks(tracks: Track[]): Track[] {
+  const map = new Map<string, Track>()
+  for (const track of tracks) {
+    const key = track.trackId ?? `${track.bvid}:${track.cid ?? 'video'}`
+    if (!map.has(key)) map.set(key, track)
+  }
+  return [...map.values()]
+}
+
 </script>
 
 <style scoped>
@@ -123,53 +116,76 @@ const greeting = computed(() => {
   gap: 20px;
 }
 
-.fav-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 16px;
+.pending-text,
+.empty-text {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  line-height: 1.7;
 }
 
-.fav-entry {
+.rank-list {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rank-row {
+  display: grid;
+  grid-template-columns: 32px 44px minmax(0, 1fr) minmax(96px, 160px) 112px;
   align-items: center;
   gap: 12px;
-  padding: 10px;
-  border-radius: var(--radius-medium);
-  text-decoration: none;
+  height: 58px;
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
   transition: background 160ms ease;
 }
 
-.fav-entry:hover {
+.rank-row:hover {
   background: var(--color-bg-hover);
 }
 
-.fav-entry img {
-  width: 64px;
-  height: 64px;
+.rank-index {
+  color: var(--color-primary);
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-cover {
+  width: 44px;
+  height: 44px;
   border-radius: var(--radius-small);
   object-fit: cover;
-  flex-shrink: 0;
+  background: var(--color-bg-hover);
 }
 
-.fav-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.rank-title,
+.rank-owner {
   min-width: 0;
-}
-
-.fav-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  white-space: nowrap;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.fav-count {
+.rank-title {
+  font-size: 14px;
+}
+
+.rank-owner,
+.rank-count {
   font-size: 12px;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
+}
+
+.rank-count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .more-link {
@@ -181,5 +197,19 @@ const greeting = computed(() => {
 
 .more-link:hover {
   color: var(--color-primary);
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 20px;
+  }
+
+  .rank-row {
+    grid-template-columns: 28px 40px minmax(0, 1fr) 96px;
+  }
+
+  .rank-owner {
+    display: none;
+  }
 }
 </style>

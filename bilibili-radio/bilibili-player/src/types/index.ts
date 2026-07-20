@@ -7,6 +7,7 @@ export interface VideoInfo {
   owner: string
   cover: string
   playCount?: number
+  recentPlayCount?: number
   publishedAt?: string | null
 }
 
@@ -36,10 +37,70 @@ export interface Track {
   cover: string
   duration: number
   playCount?: number
+  recentPlayCount?: number
   publishedAt?: string | null
   page?: number | null
   pageTitle?: string | null
   source?: string
+}
+
+export interface BiliUserProfile {
+  mid: number
+  name: string
+  face: string
+  level?: number
+  vipType?: number
+}
+
+export interface AuthStatus {
+  qrLoginEnabled: boolean
+  isLoggedIn: boolean
+  user: BiliUserProfile | null
+  cookieUpdatedAt?: string | null
+}
+
+export interface AuthQrCode {
+  qrcodeKey: string
+  url: string
+  expiresAt: string
+  pollIntervalMs: number
+}
+
+export interface AuthQrStatus {
+  qrcodeKey: string
+  status: 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'unknown'
+  code: number
+  message: string
+  isLoggedIn: boolean
+  user: BiliUserProfile | null
+}
+
+export interface FavoriteFolder {
+  mediaId: number
+  id: number
+  fid?: number | null
+  mid: number
+  title: string
+  cover: string
+  mediaCount: number
+  attr: number
+  favoriteState: number
+}
+
+export interface TrackCoverInfo {
+  bvid: string
+  cid?: number | null
+  cover: string
+  videoCover: string
+  pageCover?: string | null
+  ownerFace?: string
+  pages: Array<{
+    cid: number
+    page: number
+    pageTitle: string
+    cover: string
+    firstFrame?: string | null
+  }>
 }
 
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'

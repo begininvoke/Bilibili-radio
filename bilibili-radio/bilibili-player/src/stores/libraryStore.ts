@@ -107,7 +107,12 @@ export const useLibraryStore = defineStore('library', () => {
   }
 
   function addRecent(track: Track) {
-    recent.value = [track, ...recent.value.filter((t) => !isSameTrack(t, track))].slice(0, RECENT_LIMIT)
+    const current = recent.value.find((t) => isSameTrack(t, track))
+    const nextTrack: Track = {
+      ...track,
+      recentPlayCount: (current?.recentPlayCount ?? 0) + 1,
+    }
+    recent.value = [nextTrack, ...recent.value.filter((t) => !isSameTrack(t, track))].slice(0, RECENT_LIMIT)
     if (backendAvailable.value) {
       void addRecentTrack(track).catch(handleBackgroundError)
     }

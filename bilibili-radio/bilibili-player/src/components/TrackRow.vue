@@ -1,9 +1,5 @@
 <template>
-  <div
-    class="track-row-wrap"
-    @mouseenter="handleMouseEnter"
-    @mouseleave="handleMouseLeave"
-  >
+  <div class="track-row-wrap">
     <div
       class="track-row"
       :class="{ active: isCurrent }"
@@ -37,72 +33,63 @@
         >
           <AppIcon :name="isLiked ? 'heart-filled' : 'heart'" :size="16" />
         </button>
-        <button class="action-btn" title="添加到队列" @click.stop="handleEnqueue">
+        <button class="action-btn" :title="enqueueTitle" @click.stop="handleEnqueue">
           <AppIcon name="plus" :size="16" />
+        </button>
+        <button class="action-btn" title="添加到歌单" @click.stop="handlePlaylist">
+          <AppIcon name="list" :size="16" />
         </button>
       </div>
     </div>
 
-    <div
-      v-if="showPartsPanel"
-      class="parts-popover"
-      @click.stop
-    >
-      <div class="parts-head">
-        <div>
-          <div class="parts-title">分 P 列表</div>
-          <div class="parts-sub">{{ parts.length || 0 }} 个内容</div>
-        </div>
-        <select
-          v-if="library.playlists.length"
-          v-model="selectedPlaylistId"
-          class="playlist-select"
-          title="选择要加入的歌单"
-        >
-          <option value="">选择歌单</option>
-          <option v-for="playlist in library.playlists" :key="playlist.id" :value="playlist.id">
-            {{ playlist.name }}
-          </option>
-        </select>
-        <span v-else class="playlist-empty">先创建歌单</span>
+    <div v-if="playlistTarget" class="playlist-menu" @click.stop>
+      <div class="playlist-menu-head">
+        <span>添加到歌单</span>
+        <button class="playlist-close" title="关闭" @click="playlistTarget = null">
+          <AppIcon name="close" :size="14" />
+        </button>
       </div>
+      <div class="playlist-target" :title="playlistTarget.title">{{ playlistTarget.title }}</div>
+      <div v-if="library.playlists.length" class="playlist-options">
+        <button
+          v-for="playlist in library.playlists"
+          :key="playlist.id"
+          class="playlist-option"
+          :disabled="library.hasPlaylistTrack(playlist.id, playlistTarget)"
+          @click="addTargetToPlaylist(playlist.id)"
+        >
+          <AppIcon name="list" :size="14" />
+          <span>{{ playlist.name }}</span>
+          <small v-if="library.hasPlaylistTrack(playlist.id, playlistTarget)">已存在</small>
+        </button>
+      </div>
+      <div v-else class="playlist-empty">先在侧边栏新建歌单</div>
+    </div>
 
+    <div v-if="showPartsPanel" class="parts-panel" @click.stop>
       <div v-if="partsLoading" class="parts-state">正在读取分 P</div>
-      <div v-else-if="partsError" class="parts-state error">{{ partsError }}</div>
+      <button v-else-if="partsError" class="parts-state error" @click="retryOpenParts">
+        {{ partsError }}
+      </button>
       <div v-else class="parts-list">
         <div v-for="part in parts" :key="part.trackId ?? `${part.bvid}:${part.cid}`" class="part-row">
-          <img class="part-cover" :src="mediaUrl(part.cover)" :alt="partDisplayTitle(part)" loading="lazy" />
-          <div class="part-main">
-            <div class="part-title" :title="part.title">
-              <span class="part-index">P{{ part.page ?? '?' }}</span>
-              <span>{{ partDisplayTitle(part) }}</span>
-            </div>
-            <div class="part-meta">
-              <span>{{ formatDuration(part.duration) }}</span>
-              <span v-if="part.owner">{{ part.owner }}</span>
-            </div>
-          </div>
+          <button class="part-title-btn" :title="part.title" @click="playPart(part)">
+            <span class="part-index">P{{ part.page ?? '?' }}</span>
+            <span>{{ partDisplayTitle(part) }}</span>
+          </button>
           <div class="part-actions">
-            <button class="part-btn primary" title="播放此 P" @click="playPart(part)">
-              <AppIcon name="play" :size="14" />
-            </button>
-            <button class="part-btn" title="加入队列" @click="enqueuePart(part)">
-              <AppIcon name="plus" :size="14" />
-            </button>
             <button
               class="part-btn"
               :class="{ liked: library.isTrackLiked(part) }"
-              :title="library.isTrackLiked(part) ? '取消收藏此 P' : '收藏此 P'"
+              :title="library.isTrackLiked(part) ? '取消喜欢' : '喜欢'"
               @click="toggleLikePart(part)"
             >
               <AppIcon :name="library.isTrackLiked(part) ? 'heart-filled' : 'heart'" :size="14" />
             </button>
-            <button
-              class="part-btn"
-              :disabled="!activePlaylistId || isInActivePlaylist(part)"
-              :title="playlistButtonTitle(part)"
-              @click="addPartToPlaylist(part)"
-            >
+            <button class="part-btn" title="加入队列" @click="enqueuePart(part)">
+              <AppIcon name="plus" :size="14" />
+            </button>
+            <button class="part-btn" title="添加到歌单" @click="openPlaylistMenu(part)">
               <AppIcon name="list" :size="14" />
             </button>
           </div>
@@ -121,6 +108,9 @@ import { usePlayerStore } from '@/stores/playerStore'
 import { formatDuration } from '@/utils/format'
 import AppIcon from '@/components/base/AppIcon.vue'
 import PlayingBars from '@/components/base/PlayingBars.vue'
+
+const DETAIL_TIMEOUT_MS = 10000
+const partCache = new Map<string, Track[]>()
 
 const props = defineProps<{
   track: Track
@@ -145,55 +135,56 @@ const partsLoading = ref(false)
 const partsLoaded = ref(false)
 const partsError = ref<string | null>(null)
 const loadedBvid = ref<string | null>(null)
-const selectedPlaylistId = ref('')
+const playlistTarget = ref<Track | null>(null)
 
 let loadPromise: Promise<Track[]> | null = null
 
-const isVideoLevelTrack = computed(() => props.track.cid == null)
-const activePlaylistId = computed(() => {
-  const selected = library.playlists.find((playlist) => playlist.id === selectedPlaylistId.value)
-  return selected?.id ?? ''
-})
+const canLoadParts = computed(() => !!props.track.bvid)
 const showPartsPanel = computed(() => {
-  return isVideoLevelTrack.value && partsOpen.value && (partsLoading.value || !!partsError.value || parts.value.length > 1)
+  return canLoadParts.value
+    && (partsOpen.value || partsLoading.value || !!partsError.value)
+    && (partsLoading.value || !!partsError.value || parts.value.length > 1)
 })
+const enqueueTitle = computed(() => props.track.cid == null ? '添加全部分 P 到队列' : '添加到队列')
 
 function resetPartsIfTrackChanged() {
   if (loadedBvid.value === props.track.bvid) return
   loadedBvid.value = props.track.bvid
   parts.value = []
   partsLoaded.value = false
+  partsLoading.value = false
   partsError.value = null
   loadPromise = null
 }
 
 async function ensureParts(): Promise<Track[]> {
-  if (!isVideoLevelTrack.value) return []
+  if (!canLoadParts.value) return []
   resetPartsIfTrackChanged()
   if (partsLoaded.value) return parts.value
   if (loadPromise) return loadPromise
 
+  const bvid = props.track.bvid
+  const cached = partCache.get(bvid)
+  if (cached) {
+    parts.value = normalizeParts(cached)
+    partsLoaded.value = true
+    partsError.value = null
+    return parts.value
+  }
+
   partsLoading.value = true
   partsError.value = null
-  loadPromise = getTrackDetail(props.track.bvid)
-    .then((detail) => {
-      const detailParts = detail.pages.length ? detail.pages : [detail.track]
-      parts.value = detailParts
-        .filter((part) => part.cid != null)
-        .map((part) => ({
-          ...props.track,
-          ...part,
-          cover: part.cover || props.track.cover,
-          owner: part.owner || props.track.owner,
-          playCount: part.playCount ?? props.track.playCount,
-          publishedAt: part.publishedAt ?? props.track.publishedAt,
-          source: part.source ?? props.track.source,
-        }))
+
+  loadPromise = loadTrackParts(bvid)
+    .then((detailParts) => {
+      parts.value = normalizeParts(detailParts)
       partsLoaded.value = true
+      partsError.value = null
       return parts.value
     })
     .catch((error) => {
-      partsError.value = error instanceof Error ? error.message : '分 P 读取失败'
+      partsLoaded.value = false
+      partsError.value = error instanceof Error ? error.message : '分 P 读取失败，点击重试'
       return []
     })
     .finally(() => {
@@ -204,42 +195,42 @@ async function ensureParts(): Promise<Track[]> {
   return loadPromise
 }
 
-function handleMouseEnter() {
-  if (!isVideoLevelTrack.value) return
-  ensureDefaultPlaylist()
-  partsOpen.value = true
-  void ensureParts()
-}
-
-function handleMouseLeave() {
-  partsOpen.value = false
-}
-
 async function handlePrimaryPlay() {
-  if (!isVideoLevelTrack.value) {
+  if (props.track.cid != null) {
     emit('play')
     return
   }
+
+  if (partsLoaded.value && parts.value.length > 1) {
+    partsOpen.value = !partsOpen.value
+    return
+  }
+
+  partsOpen.value = true
   const pageTracks = await ensureParts()
   if (pageTracks.length > 1) {
     partsOpen.value = true
     return
   }
   if (pageTracks[0]) {
+    partsOpen.value = false
     player.playTrack(pageTracks[0])
     return
   }
+  partsOpen.value = false
   emit('play')
 }
 
 async function handleEnqueue() {
-  if (!isVideoLevelTrack.value) {
+  if (props.track.cid != null) {
     emit('enqueue')
     return
   }
+
   const pageTracks = await ensureParts()
   if (pageTracks.length > 1) {
     partsOpen.value = true
+    enqueueParts(pageTracks)
     return
   }
   if (pageTracks[0]) {
@@ -247,6 +238,31 @@ async function handleEnqueue() {
     return
   }
   emit('enqueue')
+}
+
+async function handlePlaylist() {
+  if (props.track.cid != null) {
+    openPlaylistMenu(props.track)
+    return
+  }
+
+  const pageTracks = await ensureParts()
+  if (pageTracks.length > 1) {
+    partsOpen.value = true
+    return
+  }
+  if (pageTracks[0]) {
+    openPlaylistMenu(pageTracks[0])
+    return
+  }
+  openPlaylistMenu(props.track)
+}
+
+async function retryOpenParts() {
+  partsLoaded.value = false
+  partsError.value = null
+  partsOpen.value = true
+  await ensureParts()
 }
 
 function partDisplayTitle(part: Track): string {
@@ -262,41 +278,65 @@ function enqueuePart(part: Track) {
   player.enqueue(part)
 }
 
+function enqueueParts(pageTracks: Track[]) {
+  for (const part of pageTracks) {
+    player.enqueue(part)
+  }
+}
+
 function toggleLikePart(part: Track) {
   library.toggleLike(part)
 }
 
-function addPartToPlaylist(part: Track) {
-  ensureDefaultPlaylist()
-  const id = activePlaylistId.value
-  if (!id) return
-  library.addToPlaylist(id, part)
+function openPlaylistMenu(track: Track) {
+  playlistTarget.value = track
 }
 
-function ensureDefaultPlaylist() {
-  if (!library.playlists.length) {
-    selectedPlaylistId.value = ''
-    return
-  }
-  if (!library.playlists.some((playlist) => playlist.id === selectedPlaylistId.value)) {
-    selectedPlaylistId.value = library.playlists[0].id
-  }
+function addTargetToPlaylist(playlistId: string) {
+  if (!playlistTarget.value) return
+  library.addToPlaylist(playlistId, playlistTarget.value)
+  playlistTarget.value = null
 }
 
-function isInActivePlaylist(part: Track): boolean {
-  const id = activePlaylistId.value
-  return !!id && library.hasPlaylistTrack(id, part)
+function normalizeParts(detailParts: Track[]): Track[] {
+  return detailParts
+    .filter((part) => part.cid != null)
+    .map((part) => ({
+      ...props.track,
+      ...part,
+      cover: part.cover || props.track.cover,
+      owner: part.owner || props.track.owner,
+      playCount: part.playCount ?? props.track.playCount,
+      publishedAt: part.publishedAt ?? props.track.publishedAt,
+      source: part.source ?? props.track.source,
+    }))
 }
 
-function playlistButtonTitle(part: Track): string {
-  if (!activePlaylistId.value) return '先创建歌单'
-  return isInActivePlaylist(part) ? '已在歌单中' : '加入所选歌单'
+function loadTrackParts(bvid: string): Promise<Track[]> {
+  return withTimeout(getTrackDetail(bvid), DETAIL_TIMEOUT_MS)
+    .then((detail) => {
+      const detailParts = detail.pages.length ? detail.pages : [detail.track]
+      partCache.set(bvid, detailParts)
+      return detailParts
+    })
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('分 P 读取超时，点击重试'))
+    }, timeoutMs)
+
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => clearTimeout(timer))
+  })
 }
 </script>
 
 <style scoped>
 .track-row-wrap {
-  position: relative;
   min-width: 0;
 }
 
@@ -440,67 +480,129 @@ function playlistButtonTitle(part: Track): string {
   opacity: 1;
 }
 
-.parts-popover {
-  position: absolute;
-  top: 58px;
-  left: 72px;
-  z-index: 40;
-  width: min(520px, calc(100vw - 340px));
-  max-height: 300px;
+.playlist-menu {
+  margin: 4px 12px 8px 96px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  background: var(--color-bg-content);
+  box-shadow: var(--shadow-popup);
+}
+
+.playlist-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.playlist-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.playlist-close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
+}
+
+.playlist-target {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.playlist-options {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px;
+}
+
+.playlist-option {
+  min-width: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.playlist-option:hover:not(:disabled) {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.playlist-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.playlist-option span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.playlist-option small {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.playlist-empty {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.parts-panel {
+  margin: 4px 12px 8px 96px;
+  max-height: 280px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   border: 1px solid rgba(251, 114, 153, 0.28);
   border-radius: var(--radius-medium);
   background: color-mix(in srgb, var(--color-bg-content) 96%, var(--color-primary) 4%);
-  box-shadow: var(--shadow-popup);
-}
-
-.parts-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  justify-content: space-between;
-  padding: 12px;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.parts-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--color-text-primary);
-}
-
-.parts-sub,
-.playlist-empty {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.playlist-select {
-  max-width: 168px;
-  height: 30px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-small);
-  padding: 0 9px;
-  background: var(--color-bg-app);
-  color: var(--color-text-primary);
-  font-size: 12px;
-  outline: none;
 }
 
 .parts-state {
-  min-height: 72px;
+  min-height: 54px;
   display: grid;
   place-items: center;
-  padding: 16px;
+  padding: 12px;
   color: var(--color-text-secondary);
   font-size: 13px;
 }
 
 .parts-state.error {
+  width: 100%;
+  border: none;
+  background: transparent;
   color: var(--color-primary);
+  cursor: pointer;
 }
 
 .parts-list {
@@ -510,11 +612,11 @@ function playlistButtonTitle(part: Track): string {
 
 .part-row {
   display: grid;
-  grid-template-columns: 44px 1fr auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 10px;
-  min-height: 56px;
-  padding: 6px;
+  min-height: 42px;
+  padding: 4px 6px;
   border-radius: var(--radius-small);
 }
 
@@ -522,46 +624,35 @@ function playlistButtonTitle(part: Track): string {
   background: var(--color-bg-hover);
 }
 
-.part-cover {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-small);
-  object-fit: cover;
-  background: var(--color-bg-hover);
-}
-
-.part-main {
+.part-title-btn {
   min-width: 0;
-}
-
-.part-title {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 13px;
+  gap: 8px;
+  border: none;
+  background: transparent;
   color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
 }
 
-.part-title span:last-child {
+.part-title-btn span:last-child {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.part-title-btn:hover span:last-child {
+  color: var(--color-primary);
 }
 
 .part-index {
   flex-shrink: 0;
   color: var(--color-primary);
+  font-size: 12px;
   font-weight: 700;
-}
-
-.part-meta {
-  display: flex;
-  gap: 8px;
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--color-text-secondary);
 }
 
 .part-actions {
@@ -583,8 +674,7 @@ function playlistButtonTitle(part: Track): string {
   transition: background 160ms ease, color 160ms ease;
 }
 
-.part-btn:hover:not(:disabled),
-.part-btn.primary {
+.part-btn:hover {
   background: var(--color-primary-soft);
   color: var(--color-primary);
 }
@@ -593,25 +683,10 @@ function playlistButtonTitle(part: Track): string {
   color: var(--color-primary);
 }
 
-.part-btn:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-
 @media (max-width: 720px) {
-  .parts-popover {
-    left: 12px;
-    width: calc(100vw - 64px);
-  }
-
-  .parts-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .playlist-select {
-    width: 100%;
-    max-width: none;
+  .playlist-menu,
+  .parts-panel {
+    margin: 4px 8px 8px 8px;
   }
 }
 </style>

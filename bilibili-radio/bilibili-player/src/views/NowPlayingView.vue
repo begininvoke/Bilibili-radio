@@ -37,7 +37,7 @@
           <div class="vinyl-disc">
             <div class="vinyl-grooves" />
             <div class="vinyl-label">
-              <img v-if="track?.cover" :src="track.cover" :alt="track?.title" />
+              <img v-if="track?.cover" :src="mediaUrl(track.cover)" :alt="track?.title" />
               <div v-else class="label-fallback">
                 <AppIcon name="disc" :size="40" />
               </div>
@@ -53,6 +53,39 @@
           <h1 class="np-title" :title="track?.title">{{ track?.title || '未在播放' }}</h1>
           <p class="np-owner">{{ ownerLine }}</p>
           <p class="np-stats">{{ statsLine }}</p>
+          <div class="detail-actions">
+            <button class="detail-btn" :disabled="!track" title="加入播放队列" @click="enqueueCurrent">
+              <AppIcon name="plus" :size="16" />
+              <span>加入队列</span>
+            </button>
+            <button class="detail-btn" :disabled="!track" title="添加到歌单" @click="playlistMenuOpen = !playlistMenuOpen">
+              <AppIcon name="list" :size="16" />
+              <span>添加到歌单</span>
+            </button>
+            <button
+              class="detail-btn"
+              :title="isDownloading ? '下载中…' : '下载当前音频'"
+              :disabled="!track || isDownloading"
+              @click="player.downloadCurrent()"
+            >
+              <AppIcon name="download" :size="16" :class="{ 'spin-slow': isDownloading }" />
+              <span>{{ isDownloading ? '下载中' : '下载' }}</span>
+            </button>
+          </div>
+          <div v-if="playlistMenuOpen" class="playlist-menu">
+            <button
+              v-for="playlist in library.playlists"
+              :key="playlist.id"
+              class="playlist-option"
+              :disabled="!track || library.hasPlaylistTrack(playlist.id, track)"
+              @click="addCurrentToPlaylist(playlist.id)"
+            >
+              <AppIcon name="list" :size="14" />
+              <span>{{ playlist.name }}</span>
+              <small v-if="track && library.hasPlaylistTrack(playlist.id, track)">已存在</small>
+            </button>
+            <p v-if="library.playlists.length === 0" class="playlist-empty">先在侧边栏新建歌单</p>
+          </div>
         </div>
 
         <div class="info-tabs">
@@ -68,28 +101,17 @@
         </div>
 
         <div class="info-panel">
-          <p class="mock-note">该区域数据接口暂未接入，以下为示例内容。</p>
           <template v-if="activeTab === 'intro'">
-            <p class="panel-text">
-              这是一段视频简介占位文本。当后端提供简介字段后，这里会展示 UP
-              主填写的视频说明、相关链接与话题标签。
-            </p>
+            <p class="panel-text muted">简介接口正在开发中。</p>
           </template>
           <template v-else-if="activeTab === 'subtitle'">
-            <p class="panel-text muted">暂无字幕，默认显示简介。</p>
+            <p class="panel-text muted">字幕接口正在开发中。</p>
           </template>
           <template v-else-if="activeTab === 'chapters'">
-            <ul class="chapter-list">
-              <li v-for="(c, i) in mockChapters" :key="i">
-                <span class="ch-time">{{ c.time }}</span>
-                <span class="ch-name">{{ c.name }}</span>
-              </li>
-            </ul>
+            <p class="panel-text muted">章节接口正在开发中。</p>
           </template>
           <template v-else>
-            <ul class="danmaku-list">
-              <li v-for="(d, i) in mockDanmaku" :key="i">{{ d }}</li>
-            </ul>
+            <p class="panel-text muted">评论区接口正在开发中。</p>
           </template>
         </div>
       </div>
@@ -142,6 +164,7 @@ import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
+import { mediaUrl } from '@/api/client'
 import type { PlayMode, Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
 import ProgressBar from '@/components/ProgressBar.vue'
@@ -168,7 +191,7 @@ const track = computed<Track | null>(() => {
 })
 
 const coverStyle = computed(() => ({
-  backgroundImage: track.value?.cover ? `url(${track.value.cover})` : 'none',
+  backgroundImage: track.value?.cover ? `url("${mediaUrl(track.value.cover).replace(/"/g, '%22')}")` : 'none',
 }))
 
 const hasQueue = computed(() => player.queue.length > 0)
@@ -185,31 +208,28 @@ const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
 const modeIcon = computed(() => MODE_META[player.playMode].icon)
 const modeLabel = computed(() => MODE_META[player.playMode].label)
 
-type TabKey = 'subtitle' | 'intro' | 'chapters' | 'danmaku'
+type TabKey = 'subtitle' | 'intro' | 'chapters' | 'comments'
 const activeTab = ref<TabKey>('intro')
 const tabs: { key: TabKey; label: string }[] = [
   { key: 'subtitle', label: '字幕' },
   { key: 'intro', label: '简介' },
   { key: 'chapters', label: '章节' },
-  { key: 'danmaku', label: '弹幕精选' },
+  { key: 'comments', label: '评论区' },
 ]
-
-const mockChapters = [
-  { time: '00:00', name: '开场' },
-  { time: '01:12', name: '主题展开' },
-  { time: '03:40', name: '高潮段落' },
-  { time: '05:20', name: '尾声' },
-]
-const mockDanmaku = [
-  '这段封面太好看了',
-  '前方高能',
-  'BGM 是什么啊求歌名',
-  '循环第 20 遍打卡',
-  '来自 2026 的观众',
-]
+const playlistMenuOpen = ref(false)
 
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
+}
+
+function enqueueCurrent() {
+  if (track.value) player.enqueue(track.value)
+}
+
+function addCurrentToPlaylist(playlistId: string) {
+  if (!track.value) return
+  library.addToPlaylist(playlistId, track.value)
+  playlistMenuOpen.value = false
 }
 </script>
 
@@ -474,6 +494,97 @@ function toggleLike() {
   font-variant-numeric: tabular-nums;
 }
 
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.detail-btn {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-small);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.detail-btn:hover:not(:disabled) {
+  background: rgba(251, 114, 153, 0.18);
+  border-color: rgba(251, 114, 153, 0.42);
+  color: #fff;
+}
+
+.detail-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.playlist-menu {
+  margin-top: 10px;
+  width: min(360px, 100%);
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-medium);
+  background: rgba(12, 12, 16, 0.6);
+}
+
+.playlist-option {
+  min-width: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.86);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.playlist-option:hover:not(:disabled) {
+  background: rgba(251, 114, 153, 0.2);
+  color: #fff;
+}
+
+.playlist-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.playlist-option span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.playlist-option small,
+.playlist-empty {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 12px;
+}
+
+.playlist-empty {
+  padding: 4px 2px;
+}
+
 .info-tabs {
   display: flex;
   gap: 8px;
@@ -504,12 +615,6 @@ function toggleLike() {
   min-height: 0;
 }
 
-.mock-note {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.4);
-  margin-bottom: 12px;
-}
-
 .panel-text {
   font-size: 14px;
   line-height: 1.8;
@@ -517,40 +622,6 @@ function toggleLike() {
 }
 .panel-text.muted {
   color: rgba(255, 255, 255, 0.5);
-}
-
-.chapter-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.chapter-list li {
-  display: flex;
-  gap: 16px;
-  font-size: 14px;
-}
-.ch-time {
-  color: var(--color-primary);
-  font-variant-numeric: tabular-nums;
-  min-width: 48px;
-}
-.ch-name {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.danmaku-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.danmaku-list li {
-  font-size: 14px;
-  color: rgba(255, 255, 255, 0.8);
-  padding: 8px 14px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: var(--radius-small);
 }
 
 /* ===== 底部 ===== */

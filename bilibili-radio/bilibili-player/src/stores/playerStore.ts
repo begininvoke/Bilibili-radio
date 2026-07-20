@@ -9,6 +9,13 @@ import type {
   PlaybackProgress,
   AudioStreamInfo,
 } from '@/types'
+import {
+  apiUrl,
+  getTrackDetail,
+  getTrackStreamInfo,
+  resetStreamStats,
+  resolveTrackInput,
+} from '@/api/client'
 import { wsClient } from '@/audio/WsClient'
 import { streamingAudioPlayer } from '@/audio/StreamingAudioPlayer'
 import { useLibraryStore } from '@/stores/libraryStore'
@@ -46,6 +53,7 @@ export const usePlayerStore = defineStore('player', () => {
   const playMode = ref<PlayMode>('order')
 
   let statsInterval: ReturnType<typeof setInterval> | null = null
+  let playSeq = 0
 
   const currentTrack = computed<Track | null>(() => {
     if (currentIndex.value < 0 || currentIndex.value >= queue.value.length) return null
@@ -91,7 +99,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function fetchStreamStats() {
     try {
-      const response = await fetch('http://localhost:5000/api/stream/stats')
+      const response = await fetch(apiUrl('/api/stream/stats'))
       const data = await response.json()
       if (data.success) {
         streamStats.value = data.data
@@ -206,8 +214,7 @@ export const usePlayerStore = defineStore('player', () => {
     isConnected.value = connected
 
     if (!connected) {
-      setError('无法连接到服务器')
-      return
+      console.warn('Socket.IO is unavailable; HTTP playback remains enabled')
     }
 
     isInitialized.value = true
@@ -226,13 +233,17 @@ export const usePlayerStore = defineStore('player', () => {
   function syncCurrentTrackFromInfo(info: VideoInfo) {
     const library = useLibraryStore()
     const track: Track = {
+      trackId: info.trackId,
       bvid: info.bvid,
+      cid: info.cid,
       title: info.title,
       owner: info.owner,
       cover: info.cover,
       duration: info.duration,
+      playCount: info.playCount,
+      publishedAt: info.publishedAt,
     }
-    const idx = queue.value.findIndex((t) => t.bvid === info.bvid)
+    const idx = findTrackIndex(track)
     if (idx >= 0) {
       queue.value[idx] = { ...queue.value[idx], ...track }
       currentIndex.value = idx
@@ -243,35 +254,78 @@ export const usePlayerStore = defineStore('player', () => {
     library.addRecent(track)
   }
 
-  /** 向服务端请求播放指定 BV/URL，不改变队列结构 */
-  function requestPlay(input: string) {
+  async function requestPlayTrack(track: Track) {
+    const seq = ++playSeq
     clearError()
     status.value = 'loading'
     statusMessage.value = '正在获取视频信息...'
     currentTime.value = 0
     streamingAudioPlayer.stop()
-    wsClient.playVideo(input)
+
+    if (!isInitialized.value) {
+      await initialize()
+    }
+
+    try {
+      const playableTrack = await resolvePlayableTrack(track)
+      if (seq !== playSeq) return
+
+      syncQueueCurrentTrack(playableTrack)
+      videoInfo.value = trackToVideoInfo(playableTrack)
+      duration.value = playableTrack.duration
+      statusMessage.value = '正在解析音频流...'
+
+      await resetStreamStats().catch((error) => {
+        console.warn('Failed to reset stream stats:', error)
+      })
+      const streamInfo = await getTrackStreamInfo(playableTrack.bvid, playableTrack.cid)
+      if (seq !== playSeq) return
+
+      statusMessage.value = '正在缓冲音频...'
+      streamingAudioPlayer.loadStream(streamInfo)
+      useLibraryStore().addRecent(playableTrack)
+    } catch (error) {
+      if (seq !== playSeq) return
+      setError(error instanceof Error ? error.message : '播放失败')
+    }
   }
 
   /** 直接输入 BV/URL 播放：作为新曲目加入队列并播放 */
-  function playInput(input: string) {
-    if (!input.trim()) {
+  async function playInput(input: string) {
+    const value = input.trim()
+    if (!value) {
       setError('请输入BV号或视频链接')
       return
     }
-    requestPlay(input.trim())
+    clearError()
+    status.value = 'loading'
+    statusMessage.value = '正在解析输入...'
+    try {
+      const detail = await resolveTrackInput(value)
+      const track = detail.pages[0] ?? detail.track
+      const idx = findTrackIndex(track)
+      if (idx >= 0) {
+        currentIndex.value = idx
+      } else {
+        queue.value.push(track)
+        currentIndex.value = queue.value.length - 1
+      }
+      await requestPlayTrack(track)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '无法解析输入')
+    }
   }
 
   /** 播放一条已知曲目（来自搜索结果、收藏、歌单等），若不在队列则追加 */
   function playTrack(track: Track) {
-    const idx = queue.value.findIndex((t) => t.bvid === track.bvid)
+    const idx = findTrackIndex(track)
     if (idx >= 0) {
       currentIndex.value = idx
     } else {
       queue.value.push(track)
       currentIndex.value = queue.value.length - 1
     }
-    requestPlay(track.bvid)
+    void requestPlayTrack(track)
   }
 
   /** 用一组曲目替换队列并从指定位置开始播放 */
@@ -279,23 +333,23 @@ export const usePlayerStore = defineStore('player', () => {
     if (tracks.length === 0) return
     queue.value = [...tracks]
     currentIndex.value = Math.max(0, Math.min(startIndex, tracks.length - 1))
-    requestPlay(queue.value[currentIndex.value].bvid)
+    void requestPlayTrack(queue.value[currentIndex.value])
   }
 
   /** 追加到队列末尾，不打断当前播放 */
   function enqueue(track: Track) {
-    if (queue.value.some((t) => t.bvid === track.bvid)) return
+    if (queue.value.some((t) => isSameTrack(t, track))) return
     queue.value.push(track)
     if (currentIndex.value === -1) {
       currentIndex.value = 0
-      requestPlay(track.bvid)
+      void requestPlayTrack(track)
     }
   }
 
   function playAt(index: number) {
     if (index < 0 || index >= queue.value.length) return
     currentIndex.value = index
-    requestPlay(queue.value[index].bvid)
+    void requestPlayTrack(queue.value[index])
   }
 
   function removeFromQueue(index: number) {
@@ -383,7 +437,7 @@ export const usePlayerStore = defineStore('player', () => {
       // 单曲循环：重新播放当前曲目
       const track = currentTrack.value
       if (track) {
-        requestPlay(track.bvid)
+        void requestPlayTrack(track)
         return
       }
     }
@@ -406,7 +460,7 @@ export const usePlayerStore = defineStore('player', () => {
       resume()
     } else if (currentTrack.value) {
       // 已停止但队列有曲目：重新播放当前曲目
-      requestPlay(currentTrack.value.bvid)
+      void requestPlayTrack(currentTrack.value)
     }
   }
 
@@ -453,15 +507,14 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   /**
-   * 下载当前曲目的音频。复用后端 /api/stream/<bvid> 代理接口，
-   * 完整拉取音频流后以 Blob 形式触发浏览器下载。
+   * 下载当前曲目的音频。按当前 Track 的 bvid/cid 解析代理流，
+   * 不依赖这首歌是否已经播放过。
    */
   async function downloadCurrent() {
     const track = currentTrack.value
     const info = videoInfo.value
-    const bvid = track?.bvid ?? info?.bvid
-    const title = track?.title ?? info?.title ?? bvid
-    if (!bvid) {
+    const fallbackTrack = track ?? (info ? videoInfoToTrack(info) : null)
+    if (!fallbackTrack) {
       setError('没有可下载的曲目')
       return
     }
@@ -470,7 +523,9 @@ export const usePlayerStore = defineStore('player', () => {
     isDownloading.value = true
     statusMessage.value = '正在下载音频...'
     try {
-      const response = await fetch(`http://localhost:5000/api/stream/${bvid}`)
+      const playableTrack = await resolvePlayableTrack(fallbackTrack)
+      const streamInfo = await getTrackStreamInfo(playableTrack.bvid, playableTrack.cid)
+      const response = await fetch(apiUrl(streamInfo.url))
       if (!response.ok) {
         throw new Error(`下载失败（${response.status}）`)
       }
@@ -486,7 +541,7 @@ export const usePlayerStore = defineStore('player', () => {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${sanitizeFilename(title as string)}.${ext}`
+      a.download = `${sanitizeFilename(playableTrack.title)}.${ext}`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -496,6 +551,62 @@ export const usePlayerStore = defineStore('player', () => {
       setError(error instanceof Error ? error.message : '下载失败')
     } finally {
       isDownloading.value = false
+    }
+  }
+
+  async function resolvePlayableTrack(track: Track): Promise<Track> {
+    if (track.cid != null) return track
+    const detail = await getTrackDetail(track.bvid)
+    const page = detail.pages[0] ?? detail.track
+    return { ...track, ...page }
+  }
+
+  function syncQueueCurrentTrack(track: Track) {
+    const idx = currentIndex.value >= 0 ? currentIndex.value : findTrackIndex(track)
+    if (idx >= 0 && idx < queue.value.length) {
+      queue.value[idx] = { ...queue.value[idx], ...track }
+      currentIndex.value = idx
+    } else {
+      queue.value.push(track)
+      currentIndex.value = queue.value.length - 1
+    }
+  }
+
+  function findTrackIndex(track: Track): number {
+    return queue.value.findIndex((candidate) => isSameTrack(candidate, track))
+  }
+
+  function isSameTrack(a: Track, b: Track): boolean {
+    if (a.trackId && b.trackId) return a.trackId === b.trackId
+    if (a.cid != null && b.cid != null) return a.bvid === b.bvid && a.cid === b.cid
+    return a.bvid === b.bvid
+  }
+
+  function trackToVideoInfo(track: Track): VideoInfo {
+    return {
+      trackId: track.trackId,
+      bvid: track.bvid,
+      cid: track.cid,
+      title: track.title,
+      duration: track.duration,
+      owner: track.owner,
+      cover: track.cover,
+      playCount: track.playCount,
+      publishedAt: track.publishedAt,
+    }
+  }
+
+  function videoInfoToTrack(info: VideoInfo): Track {
+    return {
+      trackId: info.trackId,
+      bvid: info.bvid,
+      cid: info.cid,
+      title: info.title,
+      duration: info.duration,
+      owner: info.owner,
+      cover: info.cover,
+      playCount: info.playCount,
+      publishedAt: info.publishedAt,
     }
   }
 

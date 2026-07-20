@@ -2,9 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from bili_client import BiliClient
 from library_service import LibraryService
 from models import AudioStreamInfo, Track, make_track_id
 from playback_service import PlaybackService
+from settings_service import SettingsService
 from stream_service import StreamService
 from track_service import normalize_search_item, parse_duration
 
@@ -37,6 +39,78 @@ class TrackServiceTests(unittest.TestCase):
         self.assertEqual(track.duration, 245)
         self.assertEqual(track.play_count, 123)
         self.assertTrue(track.published_at.endswith("+08:00"))
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, reason="OK"):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.reason = reason
+        self.headers = {"content-type": "application/json"}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            error = requests.HTTPError(f"{self.status_code} {self.reason}")
+            error.response = self
+            raise error
+
+
+class FakeSearchSession:
+    def __init__(self):
+        self.headers = {}
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        if url.endswith("bilibili.com/"):
+            return FakeResponse()
+        if len([call for call in self.calls if "search/type" in call]) == 1:
+            return FakeResponse(status_code=412, payload={"code": -412, "message": "request was banned"}, reason="Precondition Failed")
+        return FakeResponse(
+            payload={
+                "code": 0,
+                "data": {
+                    "result": [
+                        {
+                            "bvid": VALID_BVID,
+                            "title": "Search Result",
+                            "author": "UP",
+                            "pic": "//i0.hdslb.com/a.jpg",
+                            "duration": "01:02",
+                            "play": 9,
+                        }
+                    ]
+                },
+            }
+        )
+
+
+class BiliClientTests(unittest.TestCase):
+    def test_search_warms_guest_cookie_and_retries_412_once(self):
+        client = BiliClient()
+        client.session = FakeSearchSession()
+
+        tracks = client.search("lofi", page=1, page_size=1)
+
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0].bvid, VALID_BVID)
+        self.assertEqual(client.session.calls.count(BiliClient.HOME_URL), 2)
+        self.assertEqual(len([call for call in client.session.calls if "search/type" in call]), 2)
+
+    def test_quality_selection_falls_back_to_available_stream(self):
+        streams = [
+            {"id": 30216, "bandwidth": 64000},
+            {"id": 30232, "bandwidth": 128000},
+        ]
+
+        selected = BiliClient._select_audio_stream(streams, "high")
+
+        self.assertEqual(selected["id"], 30232)
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -82,6 +156,37 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(result["duplicated"], 1)
         self.assertEqual(len(self.service.get_playlist(playlist["id"])["tracks"]), 1)
 
+    def test_clear_recent_removes_recent_rows(self):
+        self.service.add_recent(self.track, position_ms=42_000, listen_ms=20_000)
+        self.assertEqual(len(self.service.list_recent()), 1)
+
+        result = self.service.clear_recent()
+
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(self.service.list_recent(), [])
+
+
+class SettingsServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.sqlite3"
+        self.service = SettingsService(self.db_path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_audio_quality_preference_persists(self):
+        self.assertEqual(self.service.get_audio_quality_preference(), "auto")
+
+        self.service.set_audio_quality_preference("high")
+        reloaded = SettingsService(self.db_path)
+
+        self.assertEqual(reloaded.get_audio_quality_preference(), "high")
+
+    def test_audio_quality_preference_rejects_invalid_values(self):
+        with self.assertRaises(Exception):
+            self.service.set_audio_quality_preference("lossless")
+
 
 class PlaybackServiceTests(unittest.TestCase):
     def setUp(self):
@@ -125,6 +230,20 @@ class PlaybackServiceTests(unittest.TestCase):
         )
         self.assertTrue(result["completed"])
 
+    def test_skip_under_effective_listen_does_not_enter_recent(self):
+        result = self.service.record_event(
+            {
+                "sessionId": "s3",
+                "trackId": self.track.track_id,
+                "positionMs": 8_000,
+                "listenMs": 8_000,
+                "event": "skip",
+            }
+        )
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(self.service.list_recent(), [])
+
 
 class FakeBiliClient:
     def __init__(self):
@@ -160,6 +279,113 @@ class StreamServiceTests(unittest.TestCase):
         self.assertEqual(first.url, second.url)
         self.assertEqual(client.calls, 2)
         self.assertEqual(third.quality, "high")
+
+
+class FakeAppStreamService:
+    def __init__(self):
+        self.last_quality = None
+
+    def get_audio_info(self, bvid, cid=None, quality="auto"):
+        self.last_quality = quality
+        return AudioStreamInfo(
+            url="https://example.test/audio.m4a",
+            backup_urls=[],
+            duration=100,
+            bitrate=128000,
+            sample_rate=44100,
+            channels=2,
+            quality=quality,
+            actual_quality="standard",
+            stream_id=30232,
+        )
+
+
+class AppEndpointTests(unittest.TestCase):
+    def test_stream_info_returns_part_level_proxy_url(self):
+        import app as app_module
+
+        original_stream_service = app_module.stream_service
+        app_module.stream_service = FakeAppStreamService()
+        try:
+            response = app_module.app.test_client().get(
+                f"/api/tracks/{VALID_BVID}/123/stream-info?quality=high",
+                base_url="http://127.0.0.1:5000",
+            )
+        finally:
+            app_module.stream_service = original_stream_service
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["data"]["cid"], 123)
+        self.assertEqual(
+            payload["data"]["url"],
+            f"http://127.0.0.1:5000/api/tracks/{VALID_BVID}/123/stream?quality=high",
+        )
+
+    def test_stream_info_uses_audio_quality_preference_when_quality_is_omitted(self):
+        import app as app_module
+
+        fake_stream_service = FakeAppStreamService()
+
+        class FakeSettings:
+            def get_audio_quality_preference(self):
+                return "standard"
+
+        original_stream_service = app_module.stream_service
+        original_settings_service = app_module.settings_service
+        app_module.stream_service = fake_stream_service
+        app_module.settings_service = FakeSettings()
+        try:
+            response = app_module.app.test_client().get(
+                f"/api/tracks/{VALID_BVID}/123/stream-info",
+                base_url="http://127.0.0.1:5000",
+            )
+        finally:
+            app_module.stream_service = original_stream_service
+            app_module.settings_service = original_settings_service
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(fake_stream_service.last_quality, "standard")
+        self.assertIn("quality=standard", payload["data"]["url"])
+
+    def test_playlist_batch_endpoints_preview_and_write(self):
+        import app as app_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            test_library = LibraryService(db_path)
+            original_library_service = app_module.library_service
+            app_module.library_service = test_library
+            try:
+                client = app_module.app.test_client()
+                playlist = client.post(
+                    "/api/library/playlists",
+                    json={"name": "Batch API"},
+                ).get_json()["data"]
+                track = Track(bvid=VALID_BVID, cid=123, title="Batch Track").to_dict()
+
+                preview = client.post(
+                    f"/api/library/playlists/{playlist['id']}/items:preview",
+                    json={"tracks": [track, track], "trackIds": ["missing"]},
+                )
+                write = client.post(
+                    f"/api/library/playlists/{playlist['id']}/items:batch",
+                    json={"tracks": [track, track], "trackIds": ["missing"]},
+                )
+            finally:
+                app_module.library_service = original_library_service
+
+        preview_payload = preview.get_json()
+        write_payload = write.get_json()
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview_payload["data"]["added"], 1)
+        self.assertEqual(preview_payload["data"]["duplicated"], 1)
+        self.assertEqual(preview_payload["data"]["unavailable"], 1)
+        self.assertEqual(write.status_code, 200)
+        self.assertEqual(write_payload["data"]["added"], 1)
 
 
 class ModelTests(unittest.TestCase):

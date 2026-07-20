@@ -52,6 +52,7 @@
 ### `GET /api/search?keyword=&page=&page_size=`
 
 搜索 B站视频，返回归一化 Track 列表。
+后端会维护 B站游客 Cookie；如 B站返回 412，会刷新 Cookie 并重试一次。
 
 ```json
 {
@@ -78,6 +79,35 @@
   }
 }
 ```
+
+### `GET /api/tracks/resolve?input=`
+
+解析 BV 号或 B站视频链接，并返回与详情接口一致的数据结构。
+
+### `GET /api/tracks/<bvid>/stream-info?cid=&quality=auto`
+
+返回音频代理流元信息，不直接返回媒体字节。
+
+```json
+{
+  "success": true,
+  "data": {
+    "url": "http://127.0.0.1:5000/api/tracks/BVxxx/123/stream?quality=auto",
+    "relativeUrl": "/api/tracks/BVxxx/123/stream?quality=auto",
+    "bvid": "BVxxx",
+    "cid": 123,
+    "quality": "auto",
+    "actualQuality": "high",
+    "codec": "aac",
+    "bitrate": 241172,
+    "fallback": false
+  }
+}
+```
+
+### `GET /api/tracks/<bvid>/<cid>/stream-info?quality=auto`
+
+返回指定 P 的音频代理流元信息。
 
 ### `GET /api/tracks/<bvid>/stream?cid=&quality=auto`
 
@@ -114,6 +144,10 @@
 ### `GET /api/library/recent`
 
 返回本地最近播放 Track。
+
+### `DELETE /api/library/recent`
+
+清空最近播放。
 
 ### `POST /api/library/recent`
 
@@ -211,6 +245,45 @@
 ### `GET /api/playback/resume/<track_id>`
 
 返回指定 Track 的继续播放位置。
+
+## 设置 API
+
+### `GET /api/settings`
+
+返回后端设置。
+
+```json
+{
+  "success": true,
+  "data": {
+    "audioQualityPreference": "auto"
+  }
+}
+```
+
+### `PATCH /api/settings`
+
+更新后端设置。
+
+```json
+{
+  "audioQualityPreference": "high"
+}
+```
+
+### `GET /api/settings/audio-quality`
+
+返回音质偏好。可选值：`auto | standard | high`。
+
+### `PATCH /api/settings/audio-quality`
+
+更新音质偏好。
+
+```json
+{
+  "audioQualityPreference": "standard"
+}
+```
 
 ## 后续预留
 

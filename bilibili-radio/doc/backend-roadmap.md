@@ -36,16 +36,30 @@
 - 搜索结果统一归一化为 `Track[]`。
 - 前端搜索页从 mock 数据切到真实 API。
 
+当前状态：已完成。搜索接口已加游客 Cookie 预热和 B站 412 重试，前端搜索页已切到 `/api/search`。
+
 ### 第三轮：播放器服务化
 
 - 以 `bvid + cid` 作为 P 级播放主键。
 - 支持队列中任意曲目请求播放和下载。
 - 播放失败返回可识别错误，前端可以自动跳下一首。
 
+当前状态：已完成主要播放链路。前端播放/下载走 HTTP `resolve/detail -> stream-info -> stream`，队列按 `trackId` 或 `bvid+cid` 区分曲目，Socket.IO 只保留兼容通道。
+
 ### 第四轮：本地库同步
 
 - 将 localStorage 的最近播放、喜欢、歌单迁移到后端 SQLite。
 - 前端保留 localStorage 作为短期 fallback，不作为最终事实来源。
+
+当前状态：已完成。前端初始化时读取后端 SQLite，并把本地 fallback 中后端缺失的数据补写回后端。
+
+### 后端补充计划：播放行为、音质策略、批量导入
+
+当前状态：已完成后端主链路。
+
+- 播放行为 API 已支持 heartbeat、recent 聚合、resume、skip 和 completed 判定。
+- 音质策略已支持 `auto | standard | high` 后端偏好、实际音质返回和自动降级。
+- 批量导入已支持预览和写入，统一返回 added/duplicated/unavailable 统计。
 
 ### 第五轮：B站扫码登录
 

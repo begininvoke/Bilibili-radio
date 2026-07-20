@@ -126,11 +126,15 @@ const track = computed<Track | null>(() => {
   if (currentTrack.value) return currentTrack.value
   if (videoInfo.value) {
     return {
+      trackId: videoInfo.value.trackId,
       bvid: videoInfo.value.bvid,
+      cid: videoInfo.value.cid,
       title: videoInfo.value.title,
       owner: videoInfo.value.owner,
       cover: videoInfo.value.cover,
       duration: videoInfo.value.duration,
+      playCount: videoInfo.value.playCount,
+      publishedAt: videoInfo.value.publishedAt,
     }
   }
   return null

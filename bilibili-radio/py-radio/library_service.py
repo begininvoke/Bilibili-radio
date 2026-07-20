@@ -94,6 +94,15 @@ class LibraryService:
             ).fetchall()
         return [self._track_payload_with_meta(row) for row in rows]
 
+    def clear_recent(self) -> dict[str, Any]:
+        with get_connection(self.db_path) as conn:
+            recent = conn.execute("DELETE FROM recent")
+            playback_recent = conn.execute("DELETE FROM playback_recent")
+        return {
+            "removed": recent.rowcount,
+            "playbackRemoved": playback_recent.rowcount,
+        }
+
     def add_recent(
         self,
         track: Track,
@@ -149,6 +158,26 @@ class LibraryService:
                 (track.track_id, now),
             )
         return {"track": track.to_dict(), "likedAt": now}
+
+    def is_liked(self, bvid: str, cid: Optional[int] = None) -> bool:
+        with get_connection(self.db_path) as conn:
+            if cid is None:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM likes l
+                    JOIN tracks t ON t.track_id = l.track_id
+                    WHERE t.bvid = ?
+                    LIMIT 1
+                    """,
+                    (normalize_bvid(bvid),),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM likes WHERE track_id = ? LIMIT 1",
+                    (make_track_id(bvid, cid),),
+                ).fetchone()
+        return row is not None
 
     def remove_like(self, bvid: str, cid: Optional[int] = None) -> int:
         with get_connection(self.db_path) as conn:

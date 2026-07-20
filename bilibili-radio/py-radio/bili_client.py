@@ -19,11 +19,13 @@ QUALITY_ORDER = {
 
 class BiliClient:
     SEARCH_URL = "https://api.bilibili.com/x/web-interface/search/type"
+    HOME_URL = "https://www.bilibili.com/"
 
     def __init__(self, timeout: int = 10):
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update(HttpHeader.default_headers())
+        self._guest_cookie_ready = False
 
     @staticmethod
     def is_valid_bvid(bvid: str) -> bool:
@@ -52,22 +54,13 @@ class BiliClient:
             "page": max(page, 1),
             "page_size": min(max(page_size, 1), 50),
         }
-        try:
-            response = self.session.get(
-                self.SEARCH_URL,
-                params=params,
-                headers=HttpHeader.search_headers(),
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.Timeout:
-            raise APIError.request_timeout(keyword)
-        except requests.HTTPError as exc:
-            raise self._http_error(exc, "search")
-        except requests.RequestException as exc:
-            raise APIError.network_error(str(exc))
-
+        response = self._request_search(params, keyword)
         payload = self._json_payload(response, "search")
+        if payload.get("code") == -412:
+            self._ensure_guest_cookies(force=True)
+            response = self._request_search(params, keyword)
+            payload = self._json_payload(response, "search")
+
         if payload.get("code") != 0:
             raise APIError.api_error(payload.get("message") or "Bilibili search failed")
 
@@ -230,6 +223,48 @@ class BiliClient:
         if not isinstance(payload, dict):
             raise APIError.api_error(f"Bilibili {context} returned invalid JSON payload")
         return payload
+
+    def _request_search(self, params: dict[str, Any], keyword: str) -> requests.Response:
+        self._ensure_guest_cookies()
+        try:
+            response = self.session.get(
+                self.SEARCH_URL,
+                params=params,
+                headers=HttpHeader.search_headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code == 412:
+                self._ensure_guest_cookies(force=True)
+                response = self.session.get(
+                    self.SEARCH_URL,
+                    params=params,
+                    headers=HttpHeader.search_headers(),
+                    timeout=self.timeout,
+                )
+            response.raise_for_status()
+            return response
+        except requests.Timeout:
+            raise APIError.request_timeout(keyword)
+        except requests.HTTPError as exc:
+            raise self._http_error(exc, "search")
+        except requests.RequestException as exc:
+            raise APIError.network_error(str(exc))
+
+    def _ensure_guest_cookies(self, force: bool = False) -> None:
+        if self._guest_cookie_ready and not force:
+            return
+        try:
+            response = self.session.get(
+                self.HOME_URL,
+                headers=HttpHeader.default_headers(),
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            self._guest_cookie_ready = True
+        except requests.Timeout:
+            raise APIError.request_timeout("bilibili guest cookie")
+        except requests.RequestException as exc:
+            raise APIError.network_error(f"Failed to warm Bilibili guest cookies: {exc}")
 
     @staticmethod
     def _http_error(exc: requests.HTTPError, context: str) -> APIError:

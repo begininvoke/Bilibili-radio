@@ -28,7 +28,7 @@
           <ul v-if="player.queue.length > 0" class="queue-list">
             <li
               v-for="(item, i) in player.queue"
-              :key="item.bvid + i"
+              :key="item.trackId ?? `${item.bvid}:${item.cid ?? i}`"
               class="queue-item"
               :class="{ active: i === player.currentIndex }"
               @dblclick="player.playAt(i)"

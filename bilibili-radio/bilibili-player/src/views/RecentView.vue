@@ -14,11 +14,11 @@
     <div v-if="recent.length" class="result-list">
       <TrackRow
         v-for="(t, i) in recent"
-        :key="t.bvid"
+        :key="t.trackId ?? `${t.bvid}:${t.cid ?? i}`"
         :track="t"
         :index="i"
-        :is-current="isCurrent(t.bvid)"
-        :is-playing="isPlaying && isCurrent(t.bvid)"
+        :is-current="isCurrent(t)"
+        :is-playing="isPlaying && isCurrent(t)"
         :is-liked="library.isLiked(t.bvid)"
         @play="player.playTrack(t)"
         @like="library.toggleLike(t)"
@@ -37,6 +37,7 @@
 import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
+import type { Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
 import TrackRow from '@/components/TrackRow.vue'
 import EmptyState from '@/components/base/EmptyState.vue'
@@ -46,8 +47,12 @@ const library = useLibraryStore()
 const { recent } = storeToRefs(library)
 const { currentTrack, isPlaying } = storeToRefs(player)
 
-function isCurrent(bvid: string): boolean {
-  return currentTrack.value?.bvid === bvid
+function isCurrent(track: Track): boolean {
+  const current = currentTrack.value
+  if (!current) return false
+  if (current.trackId && track.trackId) return current.trackId === track.trackId
+  if (current.cid != null && track.cid != null) return current.bvid === track.bvid && current.cid === track.cid
+  return current.bvid === track.bvid
 }
 
 function clear() {

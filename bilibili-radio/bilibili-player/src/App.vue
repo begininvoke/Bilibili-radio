@@ -8,14 +8,17 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { usePlayerStore } from '@/stores/playerStore'
+import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
 import AppShell from '@/components/layout/AppShell.vue'
 import NowPlayingView from '@/views/NowPlayingView.vue'
 
 const player = usePlayerStore()
+const library = useLibraryStore()
 const ui = useUiStore()
 
 onMounted(() => {
+  void library.initialize()
   player.initialize()
 })
 </script>

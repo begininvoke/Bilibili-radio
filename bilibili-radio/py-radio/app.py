@@ -16,6 +16,7 @@ from library_service import LibraryService
 from models import AudioStreamInfo, Track, VideoInfo, make_track_id, normalize_bvid
 from playback_service import PlaybackService
 from result import Result
+from settings_service import SettingsService
 from stream_service import StreamService
 
 
@@ -28,6 +29,7 @@ library_service = LibraryService()
 playback_service = PlaybackService()
 stream_service = StreamService(bili_client)
 auth_service = AuthService()
+settings_service = SettingsService()
 
 current_video_info: Optional[VideoInfo] = None
 current_audio_info: Optional[AudioStreamInfo] = None
@@ -83,16 +85,41 @@ def get_track_detail(bvid: str):
     return Result.ok(detail.to_dict()).json()
 
 
+@app.get("/api/tracks/resolve")
+def resolve_track_input():
+    input_value = request.args.get("input", "")
+    bvid = BiliClient.parse_input(input_value)
+    if not bvid:
+        raise APIError.invalid_input("Cannot parse BVID from input")
+    detail = bili_client.get_video_detail(bvid)
+    for track in detail.pages:
+        library_service.upsert_track(track)
+    return Result.ok(detail.to_dict()).json()
+
+
+@app.get("/api/tracks/<bvid>/stream-info")
+def get_track_stream_info_default(bvid: str):
+    cid = request.args.get("cid", type=int)
+    quality = request.args.get("quality")
+    return Result.ok(_stream_info_payload(bvid, cid=cid, quality=quality)).json()
+
+
+@app.get("/api/tracks/<bvid>/<int:cid>/stream-info")
+def get_track_stream_info_part(bvid: str, cid: int):
+    quality = request.args.get("quality")
+    return Result.ok(_stream_info_payload(bvid, cid=cid, quality=quality)).json()
+
+
 @app.get("/api/tracks/<bvid>/stream")
 def stream_track_default(bvid: str):
     cid = request.args.get("cid", type=int)
-    quality = request.args.get("quality", "auto")
+    quality = request.args.get("quality") or settings_service.get_audio_quality_preference()
     return stream_service.proxy_stream(bvid, cid=cid, quality=quality)
 
 
 @app.get("/api/tracks/<bvid>/<int:cid>/stream")
 def stream_track_part(bvid: str, cid: int):
-    quality = request.args.get("quality", "auto")
+    quality = request.args.get("quality") or settings_service.get_audio_quality_preference()
     return stream_service.proxy_stream(bvid, cid=cid, quality=quality)
 
 
@@ -106,11 +133,8 @@ def get_video_info(bvid: str):
 
 @app.get("/api/video/audio/<bvid>/<int:cid>")
 def get_audio_stream(bvid: str, cid: int):
-    quality = request.args.get("quality", "auto")
-    audio_info = stream_service.get_audio_info(bvid, cid=cid, quality=quality)
-    payload = audio_info.to_dict()
-    payload["url"] = f"/api/tracks/{normalize_bvid(bvid)}/{cid}/stream?quality={quality}"
-    return Result.ok(payload).json()
+    quality = request.args.get("quality")
+    return Result.ok(_stream_info_payload(bvid, cid=cid, quality=quality)).json()
 
 
 @app.get("/api/player/status")
@@ -153,6 +177,11 @@ def reset_stream_stats():
 def list_recent():
     limit = _int_arg("limit", 100)
     return Result.ok({"tracks": library_service.list_recent(limit=limit)}).json()
+
+
+@app.delete("/api/library/recent")
+def clear_recent():
+    return Result.ok(library_service.clear_recent()).json()
 
 
 @app.post("/api/library/recent")
@@ -257,6 +286,34 @@ def playback_resume(track_id: str):
 @app.get("/api/auth/status")
 def auth_status():
     return Result.ok({"qrLoginEnabled": auth_service.qr_login_enabled()}).json()
+
+
+@app.get("/api/settings")
+def get_settings():
+    return Result.ok(settings_service.to_dict()).json()
+
+
+@app.patch("/api/settings")
+def update_settings():
+    payload = _json_body()
+    if "audioQualityPreference" in payload or "audio_quality_preference" in payload:
+        value = payload.get("audioQualityPreference") or payload.get("audio_quality_preference")
+        settings_service.set_audio_quality_preference(value)
+    return Result.ok(settings_service.to_dict()).json()
+
+
+@app.get("/api/settings/audio-quality")
+def get_audio_quality_preference():
+    return Result.ok(settings_service.to_dict()).json()
+
+
+@app.patch("/api/settings/audio-quality")
+def update_audio_quality_preference():
+    payload = _json_body()
+    value = payload.get("audioQualityPreference") or payload.get("audio_quality_preference")
+    return Result.ok(
+        {"audioQualityPreference": settings_service.set_audio_quality_preference(value)}
+    ).json()
 
 
 @socketio.on("connect")
@@ -403,6 +460,30 @@ def _track_ids_from_payload(payload: dict[str, Any]) -> list[str]:
     if not isinstance(track_ids, list):
         return []
     return [str(track_id) for track_id in track_ids if track_id]
+
+
+def _stream_info_payload(bvid: str, cid: Optional[int], quality: Optional[str]) -> dict[str, Any]:
+    resolved_bvid = normalize_bvid(bvid)
+    resolved_cid = cid
+    if resolved_cid is None:
+        resolved_cid = bili_client.get_video_info(resolved_bvid).cid
+    resolved_quality = quality or settings_service.get_audio_quality_preference()
+    audio_info = stream_service.get_audio_info(resolved_bvid, cid=resolved_cid, quality=resolved_quality)
+    payload = audio_info.to_dict()
+    relative_url = f"/api/tracks/{resolved_bvid}/{resolved_cid}/stream?quality={resolved_quality}"
+    payload.update(
+        {
+            "url": _absolute_url(relative_url),
+            "relativeUrl": relative_url,
+            "bvid": resolved_bvid,
+            "cid": resolved_cid,
+        }
+    )
+    return payload
+
+
+def _absolute_url(path: str) -> str:
+    return f"{request.host_url.rstrip('/')}{path}"
 
 
 if __name__ == "__main__":

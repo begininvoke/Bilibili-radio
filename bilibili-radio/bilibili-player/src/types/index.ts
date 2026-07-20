@@ -1,26 +1,45 @@
 export interface VideoInfo {
+  trackId?: string
   bvid: string
+  cid?: number | null
   title: string
   duration: number
   owner: string
   cover: string
+  playCount?: number
+  publishedAt?: string | null
 }
 
 export interface AudioStreamInfo {
   url: string
+  relativeUrl?: string
   duration: number
   bitrate: number
+  sampleRate?: number
   sample_rate: number
   channels: number
+  quality?: string
+  actualQuality?: string
+  codec?: string
+  fallback?: boolean
+  bvid?: string
+  cid?: number
 }
 
 /** 播放队列中的一条曲目，也用于最近播放、收藏、歌单 */
 export interface Track {
+  trackId?: string
   bvid: string
+  cid?: number | null
   title: string
   owner: string
   cover: string
   duration: number
+  playCount?: number
+  publishedAt?: string | null
+  page?: number | null
+  pageTitle?: string | null
+  source?: string
 }
 
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -77,5 +96,6 @@ export interface Playlist {
   name: string
   cover: string | null
   tracks: Track[]
-  createdAt: number
+  createdAt: number | string
+  updatedAt?: string
 }

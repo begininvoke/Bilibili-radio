@@ -14,3 +14,10 @@ Thumbs.db
 # 日志文件
 *.log
 npm-debug.log
+
+# Python generated files
+__pycache__/
+*.pyc
+
+# Local backend runtime data
+py-radio/data/

@@ -12,6 +12,7 @@ import type {
 import {
   apiUrl,
   getTrackDetail,
+  getTrackCoverInfo,
   getTrackStreamInfo,
   resetStreamStats,
   resolveTrackInput,
@@ -555,10 +556,24 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function resolvePlayableTrack(track: Track): Promise<Track> {
-    if (track.cid != null) return track
+    if (track.cid != null) return hydrateTrackCover(track)
     const detail = await getTrackDetail(track.bvid)
     const page = detail.pages[0] ?? detail.track
-    return { ...track, ...page }
+    return hydrateTrackCover({ ...track, ...page })
+  }
+
+  async function hydrateTrackCover(track: Track): Promise<Track> {
+    if (track.cid == null) return track
+    try {
+      const coverInfo = await getTrackCoverInfo(track.bvid, track.cid)
+      return {
+        ...track,
+        cover: coverInfo.cover || track.cover,
+      }
+    } catch (error) {
+      console.warn('Failed to hydrate track cover:', error)
+      return track
+    }
   }
 
   function syncQueueCurrentTrack(track: Track) {
@@ -578,7 +593,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function isSameTrack(a: Track, b: Track): boolean {
     if (a.trackId && b.trackId) return a.trackId === b.trackId
-    if (a.cid != null && b.cid != null) return a.bvid === b.bvid && a.cid === b.cid
+    if (a.cid != null || b.cid != null) return a.bvid === b.bvid && a.cid != null && b.cid != null && a.cid === b.cid
     return a.bvid === b.bvid
   }
 

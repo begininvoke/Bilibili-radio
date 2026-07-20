@@ -84,6 +84,28 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  async function refreshFromBackend() {
+    isSyncing.value = true
+    syncError.value = null
+    try {
+      const [remoteRecent, remoteLikes, remotePlaylists] = await Promise.all([
+        fetchRecent(RECENT_LIMIT),
+        fetchLikes(),
+        fetchPlaylists(),
+      ])
+      backendAvailable.value = true
+      recent.value = remoteRecent
+      likes.value = remoteLikes
+      playlists.value = remotePlaylists
+    } catch (error) {
+      backendAvailable.value = false
+      syncError.value = error instanceof Error ? error.message : '本地库刷新失败'
+      throw error
+    } finally {
+      isSyncing.value = false
+    }
+  }
+
   function addRecent(track: Track) {
     recent.value = [track, ...recent.value.filter((t) => !isSameTrack(t, track))].slice(0, RECENT_LIMIT)
     if (backendAvailable.value) {
@@ -102,9 +124,13 @@ export const useLibraryStore = defineStore('library', () => {
     return likes.value.some((t) => t.bvid === bvid)
   }
 
+  function isTrackLiked(track: Track): boolean {
+    return likes.value.some((t) => isSameTrack(t, track))
+  }
+
   function toggleLike(track: Track) {
-    if (isLiked(track.bvid)) {
-      likes.value = likes.value.filter((t) => t.bvid !== track.bvid)
+    if (isTrackLiked(track)) {
+      likes.value = likes.value.filter((t) => !isSameTrack(t, track))
       if (backendAvailable.value) {
         void removeLikeTrack(track).catch(handleBackgroundError)
       }
@@ -159,6 +185,11 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  function hasPlaylistTrack(id: string, track: Track): boolean {
+    const playlist = playlists.value.find((p) => p.id === id)
+    return !!playlist && playlist.tracks.some((t) => isSameTrack(t, track))
+  }
+
   async function migrateLocalFallback(
     localRecent: Track[],
     localLikes: Track[],
@@ -201,7 +232,7 @@ export const useLibraryStore = defineStore('library', () => {
 
   function isSameTrack(a: Track, b: Track): boolean {
     if (a.trackId && b.trackId) return a.trackId === b.trackId
-    if (a.cid != null && b.cid != null) return a.bvid === b.bvid && a.cid === b.cid
+    if (a.cid != null || b.cid != null) return a.bvid === b.bvid && a.cid != null && b.cid != null && a.cid === b.cid
     return a.bvid === b.bvid
   }
 
@@ -218,13 +249,16 @@ export const useLibraryStore = defineStore('library', () => {
     backendAvailable,
     syncError,
     initialize,
+    refreshFromBackend,
     addRecent,
     clearRecent,
     isLiked,
+    isTrackLiked,
     toggleLike,
     createPlaylist,
     removePlaylist,
     getPlaylist,
     addToPlaylist,
+    hasPlaylistTrack,
   }
 })

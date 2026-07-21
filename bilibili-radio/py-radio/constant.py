@@ -42,6 +42,13 @@ class HttpHeader:
 class BilibiliAPI:
     VIDEO_INFO_URL = "https://api.bilibili.com/x/web-interface/view"
     PLAY_URL = "https://api.bilibili.com/x/player/playurl"
+    PLAYER_INFO_URL = "https://api.bilibili.com/x/player/v2"
+    REPLY_MAIN_URL = "https://api.bilibili.com/x/v2/reply/main"
+    NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+    QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+    QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
+    FAVORITE_FOLDERS_URL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
+    FAVORITE_RESOURCE_URL = "https://api.bilibili.com/x/v3/fav/resource/list"
 
     BV_PATTERN = re.compile(r"^(BV|bv)[0-9A-Za-z]{10}$")
     URL_PATTERN = re.compile(

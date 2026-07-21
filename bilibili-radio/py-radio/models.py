@@ -112,6 +112,49 @@ class VideoDetail:
 
 
 @dataclass
+class BiliUserProfile:
+    mid: int
+    name: str
+    face: str = ""
+    level: int = 0
+    vip_type: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mid": self.mid,
+            "name": self.name,
+            "face": self.face,
+            "level": self.level,
+            "vipType": self.vip_type,
+        }
+
+
+@dataclass
+class FavoriteFolder:
+    media_id: int
+    title: str
+    mid: int = 0
+    fid: Optional[int] = None
+    cover: str = ""
+    media_count: int = 0
+    attr: int = 0
+    favorite_state: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mediaId": self.media_id,
+            "id": self.media_id,
+            "fid": self.fid,
+            "mid": self.mid,
+            "title": self.title,
+            "cover": self.cover,
+            "mediaCount": self.media_count,
+            "attr": self.attr,
+            "favoriteState": self.favorite_state,
+        }
+
+
+@dataclass
 class AudioStreamInfo:
     url: str
     backup_urls: list[str]

@@ -1,26 +1,43 @@
 <template>
-  <AppShell />
+  <RouterView v-if="isAuthLayout" />
+  <AppShell v-else />
   <Transition name="nowplaying">
-    <NowPlayingView v-if="ui.nowPlayingOpen" />
+    <NowPlayingView v-if="!isAuthLayout && ui.nowPlayingOpen" />
   </Transition>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
+import { useAuthStore } from '@/stores/authStore'
 import AppShell from '@/components/layout/AppShell.vue'
 import NowPlayingView from '@/views/NowPlayingView.vue'
 
+const route = useRoute()
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
+const auth = useAuthStore()
+
+const isAuthLayout = computed(() => route.meta.layout === 'auth')
 
 onMounted(() => {
+  void auth.initialize()
+  initializeAppServices()
+})
+
+watch(isAuthLayout, () => {
+  initializeAppServices()
+})
+
+function initializeAppServices() {
+  if (isAuthLayout.value) return
   void library.initialize()
   player.initialize()
-})
+}
 </script>
 
 <style>

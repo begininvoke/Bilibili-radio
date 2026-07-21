@@ -77,12 +77,26 @@
           @enqueue="player.enqueue(t)"
         />
       </div>
+
+      <div v-if="searchedKeyword && results.length > 0" ref="searchSentinel" class="load-more-zone">
+        <div v-if="searchLoadingMore" class="loading-more">
+          <LoadingDots />
+          <span>正在加载更多</span>
+        </div>
+        <button v-else-if="searchMoreError" class="load-more-btn error" type="button" @click="loadMoreSearch(true)">
+          {{ searchMoreError }}
+        </button>
+        <button v-else-if="searchHasMore" class="load-more-btn" type="button" @click="loadMoreSearch()">
+          加载更多
+        </button>
+        <span v-else-if="results.length >= pageSize" class="end-state">没有更多了</span>
+      </div>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ApiError, searchTracks } from '@/api/client'
@@ -103,10 +117,17 @@ const input = ref('')
 const results = ref<Track[]>([])
 const searchedKeyword = ref('')
 const searchLoading = ref(false)
+const searchLoadingMore = ref(false)
+const searchHasMore = ref(false)
+const searchMoreError = ref<string | null>(null)
 const searchError = ref<string | null>(null)
+const searchSentinel = ref<HTMLElement | null>(null)
 
 const pageSize = 20
 let searchSeq = 0
+let searchPage = 1
+let searchObserver: IntersectionObserver | null = null
+let shellScrollEl: HTMLElement | null = null
 
 watch(
   () => route.query.q,
@@ -118,6 +139,15 @@ watch(
   },
   { immediate: true }
 )
+
+onMounted(() => {
+  setupSearchObserver()
+})
+
+onBeforeUnmount(() => {
+  searchObserver?.disconnect()
+  searchObserver = null
+})
 
 const track = computed<Track | null>(() => {
   if (currentTrack.value) return currentTrack.value
@@ -152,6 +182,10 @@ async function handleSearch() {
 
   const seq = ++searchSeq
   searchLoading.value = true
+  searchLoadingMore.value = false
+  searchHasMore.value = false
+  searchMoreError.value = null
+  searchPage = 1
   searchError.value = null
 
   try {
@@ -159,14 +193,55 @@ async function handleSearch() {
     if (seq !== searchSeq) return
     results.value = data.tracks
     searchedKeyword.value = keyword
+    searchHasMore.value = data.tracks.length === pageSize
+    void nextTick().then(() => {
+      setupSearchObserver()
+      maybeLoadMoreSearchIfNeeded()
+    })
   } catch (error) {
     if (seq !== searchSeq) return
     results.value = []
     searchedKeyword.value = keyword
+    searchHasMore.value = false
     searchError.value = error instanceof ApiError ? error.message : '搜索失败'
   } finally {
     if (seq === searchSeq) {
       searchLoading.value = false
+    }
+  }
+}
+
+async function loadMoreSearch(force = false) {
+  const keyword = searchedKeyword.value.trim()
+  if (
+    !keyword ||
+    searchLoading.value ||
+    searchLoadingMore.value ||
+    !searchHasMore.value ||
+    (!force && searchMoreError.value)
+  ) {
+    return
+  }
+
+  const seq = searchSeq
+  const nextPage = searchPage + 1
+  searchLoadingMore.value = true
+  searchMoreError.value = null
+
+  try {
+    const data = await searchTracks(keyword, nextPage, pageSize)
+    if (seq !== searchSeq || keyword !== searchedKeyword.value) return
+    results.value = mergeTracks(results.value, data.tracks)
+    searchPage = nextPage
+    searchHasMore.value = data.tracks.length === pageSize
+  } catch (error) {
+    if (seq === searchSeq) {
+      searchMoreError.value = error instanceof ApiError ? error.message : '加载更多搜索结果失败，点击重试'
+    }
+  } finally {
+    if (seq === searchSeq) {
+      searchLoadingMore.value = false
+      void nextTick().then(maybeLoadMoreSearchIfNeeded)
     }
   }
 }
@@ -180,6 +255,64 @@ function handlePlay() {
 
 function looksLikeBiliInput(value: string): boolean {
   return /^(BV|bv)[0-9A-Za-z]{10}$/.test(value) || /bilibili\.com\/video\/(BV|bv)[0-9A-Za-z]{10}/.test(value)
+}
+
+function mergeTracks(current: Track[], incoming: Track[]): Track[] {
+  const seen = new Set(current.map(trackKey))
+  const merged = [...current]
+  for (const track of incoming) {
+    const key = trackKey(track)
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(track)
+  }
+  return merged
+}
+
+function trackKey(track: Track): string {
+  return track.trackId ?? `${track.bvid}:${track.cid ?? 'main'}`
+}
+
+function setupSearchObserver() {
+  searchObserver?.disconnect()
+  searchObserver = null
+
+  shellScrollEl = document.querySelector('.shell-content') as HTMLElement | null
+  if (!searchSentinel.value || typeof IntersectionObserver === 'undefined') return
+
+  searchObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void loadMoreSearch()
+      }
+    },
+    {
+      root: shellScrollEl,
+      rootMargin: '160px 0px',
+      threshold: 0.01,
+    }
+  )
+  searchObserver.observe(searchSentinel.value)
+}
+
+function maybeLoadMoreSearchIfNeeded() {
+  const sentinel = searchSentinel.value
+  if (
+    !sentinel ||
+    !searchHasMore.value ||
+    searchLoading.value ||
+    searchLoadingMore.value ||
+    searchMoreError.value
+  ) {
+    return
+  }
+
+  const sentinelRect = sentinel.getBoundingClientRect()
+  const rootRect = shellScrollEl?.getBoundingClientRect()
+  const bottom = rootRect?.bottom ?? window.innerHeight
+  if (sentinelRect.top <= bottom + 160) {
+    void loadMoreSearch()
+  }
 }
 </script>
 
@@ -305,6 +438,48 @@ function looksLikeBiliInput(value: string): boolean {
   gap: 10px;
   color: var(--color-text-secondary);
   font-size: 13px;
+}
+
+.load-more-zone {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 0 4px;
+}
+
+.loading-more,
+.load-more-btn,
+.end-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.load-more-btn {
+  padding: 0 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-content);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.load-more-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: rgba(251, 114, 153, 0.08);
+}
+
+.load-more-btn.error {
+  border-color: rgba(251, 114, 153, 0.34);
+  background: rgba(251, 114, 153, 0.08);
+  color: var(--color-primary);
 }
 
 @media (max-width: 720px) {

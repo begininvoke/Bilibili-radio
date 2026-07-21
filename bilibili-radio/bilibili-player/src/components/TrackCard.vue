@@ -1,7 +1,7 @@
 <template>
   <div class="track-card" @click="$emit('play')">
     <div class="cover-wrap">
-      <img class="cover" :src="track.cover" :alt="track.title" loading="lazy" />
+      <img class="cover" :src="mediaUrl(track.cover)" :alt="track.title" loading="lazy" />
       <button class="play-fab" title="播放" @click.stop="$emit('play')">
         <AppIcon name="play" :size="20" />
       </button>
@@ -14,6 +14,7 @@
 
 <script setup lang="ts">
 import type { Track } from '@/types'
+import { mediaUrl } from '@/api/client'
 import { formatDuration } from '@/utils/format'
 import AppIcon from '@/components/base/AppIcon.vue'
 

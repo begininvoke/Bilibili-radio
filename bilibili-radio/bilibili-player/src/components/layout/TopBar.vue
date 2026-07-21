@@ -14,7 +14,7 @@
       <input
         v-model="keyword"
         type="text"
-        placeholder="搜索，或粘贴 BV号 / 视频链接"
+        placeholder="搜索，或粘贴 BV / 视频链接"
         class="search-input"
       />
     </form>
@@ -26,30 +26,30 @@
       <button class="icon-btn" title="消息">
         <AppIcon name="bell" :size="18" />
       </button>
-      <button class="avatar" title="登录">
-        <span class="avatar-fallback">登录</span>
+      <button class="avatar" :title="authTitle" @click="openLogin">
+        <img v-if="auth.user?.face" class="avatar-img" :src="mediaUrl(auth.user.face)" :alt="auth.user.name" />
+        <span class="avatar-fallback">{{ auth.user?.name || '登录' }}</span>
       </button>
 
-      <div class="win-buttons">
-        <span class="win-dot min" />
-        <span class="win-dot max" />
-        <span class="win-dot close" />
-      </div>
     </div>
   </header>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/authStore'
 import { useUiStore } from '@/stores/uiStore'
+import { mediaUrl } from '@/api/client'
 import AppIcon from '@/components/base/AppIcon.vue'
 
 const router = useRouter()
 const ui = useUiStore()
+const auth = useAuthStore()
 
 const keyword = ref('')
 const isDark = computed(() => ui.theme === 'dark')
+const authTitle = computed(() => (auth.isLoggedIn ? `已登录：${auth.user?.name ?? ''}` : '登录 B 站'))
 
 function submitSearch() {
   const q = keyword.value.trim()
@@ -63,6 +63,10 @@ function goBack() {
 
 function goForward() {
   router.forward()
+}
+
+function openLogin() {
+  router.push({ name: 'login' })
 }
 </script>
 
@@ -147,7 +151,9 @@ function goForward() {
 
 .avatar {
   height: 32px;
-  padding: 0 14px;
+  max-width: 132px;
+  min-width: 64px;
+  padding: 0 12px 0 6px;
   border: 1px solid var(--color-border);
   background: transparent;
   border-radius: 999px;
@@ -155,6 +161,9 @@ function goForward() {
   font-size: 13px;
   cursor: pointer;
   transition: border-color 160ms ease, color 160ms ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .avatar:hover {
@@ -162,22 +171,18 @@ function goForward() {
   color: var(--color-primary);
 }
 
-.win-buttons {
-  display: flex;
-  gap: 8px;
-  margin-left: 8px;
-  padding-left: 12px;
-  border-left: 1px solid var(--color-border);
-}
-
-.win-dot {
-  width: 12px;
-  height: 12px;
+.avatar-img {
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
-  cursor: pointer;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 
-.win-dot.min { background: #febc2e; }
-.win-dot.max { background: #28c840; }
-.win-dot.close { background: #ff5f57; }
+.avatar-fallback {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 </style>

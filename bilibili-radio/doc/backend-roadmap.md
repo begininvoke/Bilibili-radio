@@ -87,3 +87,10 @@
 - 音频 URL 有时效性，只能短期缓存，不写入本地库。
 - Cookie 登录必须后置，避免在播放主链路里提前引入账号态复杂度。
 - 当前 Git 根目录在 `E:\tool-project`，开发时只改 `E:\tool-project\bilibili-radio` 下文件，避免误处理父级旧路径删除。
+
+## Round 5/6 Status Update
+
+- Round 5 is implemented at backend API level: QR login generation/polling, encrypted backend-only Cookie storage, profile refresh, status, and logout.
+- Round 6 is implemented at backend API level: favorite folder list, favorite contents normalized to `Track[]`, favorite import into new/existing local playlists, and analysis event ingress for AMEM/recommendation.
+- Cover metadata is exposed through dedicated track cover APIs. The implementation uses `data.pic` as video cover and `data.pages[].first_frame` as P-level cover candidate.
+- Frontend has typed API client methods, but no dedicated login/favorites management UI has been added yet.

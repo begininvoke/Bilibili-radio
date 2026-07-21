@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type {
   VideoInfo,
   PlayerStatus,
@@ -8,14 +8,17 @@ import type {
   DownloadProgress,
   PlaybackProgress,
   AudioStreamInfo,
+  PlayerQueueSnapshot,
 } from '@/types'
 import {
   apiUrl,
+  fetchPlayerQueue,
   getTrackDetail,
   getTrackCoverInfo,
   getTrackStreamInfo,
   resetStreamStats,
   resolveTrackInput,
+  savePlayerQueue,
 } from '@/api/client'
 import { wsClient } from '@/audio/WsClient'
 import { streamingAudioPlayer } from '@/audio/StreamingAudioPlayer'
@@ -31,8 +34,45 @@ interface StreamStats {
 }
 
 const PLAY_MODES: PlayMode[] = ['order', 'loop', 'single', 'shuffle']
+const QUEUE_STORAGE_KEY = 'bili-radio:player-queue'
+const QUEUE_SAVE_DEBOUNCE_MS = 300
+
+function isPlayMode(value: unknown): value is PlayMode {
+  return typeof value === 'string' && PLAY_MODES.includes(value as PlayMode)
+}
+
+function loadQueueSnapshot(): PlayerQueueSnapshot {
+  try {
+    const raw = localStorage.getItem(QUEUE_STORAGE_KEY)
+    if (!raw) {
+      return { queue: [], currentIndex: -1, playMode: 'order', updatedAt: null }
+    }
+    const parsed = JSON.parse(raw) as Partial<PlayerQueueSnapshot>
+    const queue = Array.isArray(parsed.queue) ? parsed.queue.filter(isValidTrack) : []
+    return {
+      queue,
+      currentIndex: clampQueueIndex(Number(parsed.currentIndex ?? -1), queue.length),
+      playMode: isPlayMode(parsed.playMode) ? parsed.playMode : 'order',
+      updatedAt: parsed.updatedAt ?? null,
+    }
+  } catch {
+    return { queue: [], currentIndex: -1, playMode: 'order', updatedAt: null }
+  }
+}
+
+function isValidTrack(value: unknown): value is Track {
+  const track = value as Track
+  return !!track && typeof track.bvid === 'string' && typeof track.title === 'string'
+}
+
+function clampQueueIndex(index: number, queueLength: number): number {
+  if (queueLength <= 0) return -1
+  if (!Number.isFinite(index)) return -1
+  return Math.max(-1, Math.min(Math.trunc(index), queueLength - 1))
+}
 
 export const usePlayerStore = defineStore('player', () => {
+  const initialQueueSnapshot = loadQueueSnapshot()
   const status = ref<PlayerStatus>('idle')
   const currentTime = ref(0)
   const duration = ref(0)
@@ -49,12 +89,17 @@ export const usePlayerStore = defineStore('player', () => {
   const isDownloading = ref(false)
 
   // 播放队列
-  const queue = ref<Track[]>([])
-  const currentIndex = ref(-1)
-  const playMode = ref<PlayMode>('order')
+  const queue = ref<Track[]>(initialQueueSnapshot.queue)
+  const currentIndex = ref(initialQueueSnapshot.currentIndex)
+  const playMode = ref<PlayMode>(initialQueueSnapshot.playMode)
+  const queueBackendAvailable = ref(false)
+  const queueSyncError = ref<string | null>(null)
 
   let statsInterval: ReturnType<typeof setInterval> | null = null
   let playSeq = 0
+  let queueSaveTimer: ReturnType<typeof setTimeout> | null = null
+  let queueRestored = false
+  let suppressQueueRemoteSync = false
 
   const currentTrack = computed<Track | null>(() => {
     if (currentIndex.value < 0 || currentIndex.value >= queue.value.length) return null
@@ -80,6 +125,113 @@ export const usePlayerStore = defineStore('player', () => {
       speed: formatSpeed(streamStats.value.bytes_per_second),
     }
   })
+
+  watch(
+    [queue, currentIndex, playMode],
+    () => {
+      const snapshot = currentQueueSnapshot()
+      saveQueueSnapshotLocal(snapshot)
+      if (queueRestored && queueBackendAvailable.value && !suppressQueueRemoteSync) {
+        scheduleQueueRemoteSave(snapshot)
+      }
+    },
+    { deep: true }
+  )
+
+  function currentQueueSnapshot(updatedAt = new Date().toISOString()): PlayerQueueSnapshot {
+    const queueItems = queue.value.filter(isValidTrack)
+    return {
+      queue: queueItems,
+      currentIndex: clampQueueIndex(currentIndex.value, queueItems.length),
+      playMode: isPlayMode(playMode.value) ? playMode.value : 'order',
+      updatedAt,
+    }
+  }
+
+  function saveQueueSnapshotLocal(snapshot: PlayerQueueSnapshot) {
+    localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(snapshot))
+  }
+
+  function applyQueueSnapshot(snapshot: PlayerQueueSnapshot) {
+    suppressQueueRemoteSync = true
+    const tracks = Array.isArray(snapshot.queue) ? snapshot.queue.filter(isValidTrack) : []
+    queue.value = tracks
+    currentIndex.value = clampQueueIndex(snapshot.currentIndex, tracks.length)
+    playMode.value = isPlayMode(snapshot.playMode) ? snapshot.playMode : 'order'
+    saveQueueSnapshotLocal({
+      queue: tracks,
+      currentIndex: currentIndex.value,
+      playMode: playMode.value,
+      updatedAt: snapshot.updatedAt ?? new Date().toISOString(),
+    })
+    syncRestoredCurrentTrack()
+    window.setTimeout(() => {
+      suppressQueueRemoteSync = false
+    }, 0)
+  }
+
+  async function restorePersistedQueue() {
+    if (queueRestored) return
+
+    const localSnapshot = currentQueueSnapshot(initialQueueSnapshot.updatedAt ?? new Date().toISOString())
+    try {
+      const remoteSnapshot = await fetchPlayerQueue()
+      queueBackendAvailable.value = true
+      queueSyncError.value = null
+      if (remoteSnapshot.updatedAt) {
+        applyQueueSnapshot(remoteSnapshot)
+      } else if (localSnapshot.queue.length > 0) {
+        const saved = await savePlayerQueue(localSnapshot)
+        applyQueueSnapshot(saved)
+      } else {
+        applyQueueSnapshot(localSnapshot)
+      }
+    } catch (error) {
+      queueBackendAvailable.value = false
+      queueSyncError.value = error instanceof Error ? error.message : '播放队列同步失败'
+      applyQueueSnapshot(localSnapshot)
+    } finally {
+      queueRestored = true
+    }
+  }
+
+  function scheduleQueueRemoteSave(snapshot = currentQueueSnapshot()) {
+    if (queueSaveTimer) {
+      clearTimeout(queueSaveTimer)
+    }
+    queueSaveTimer = setTimeout(() => {
+      queueSaveTimer = null
+      void persistQueueRemote(snapshot)
+    }, QUEUE_SAVE_DEBOUNCE_MS)
+  }
+
+  async function persistQueueRemote(snapshot = currentQueueSnapshot()) {
+    try {
+      const saved = await savePlayerQueue(snapshot)
+      queueBackendAvailable.value = true
+      queueSyncError.value = null
+      saveQueueSnapshotLocal({
+        queue: saved.queue,
+        currentIndex: saved.currentIndex,
+        playMode: saved.playMode,
+        updatedAt: saved.updatedAt ?? snapshot.updatedAt,
+      })
+    } catch (error) {
+      queueBackendAvailable.value = false
+      queueSyncError.value = error instanceof Error ? error.message : '播放队列同步失败'
+    }
+  }
+
+  function syncRestoredCurrentTrack() {
+    const track = currentTrack.value
+    if (!track) {
+      videoInfo.value = null
+      duration.value = 0
+      return
+    }
+    videoInfo.value = trackToVideoInfo(track)
+    duration.value = track.duration
+  }
 
   function formatSpeed(bytesPerSecond: number): string {
     if (bytesPerSecond < 1024) {
@@ -125,6 +277,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function initialize() {
+    await restorePersistedQueue()
     if (isInitialized.value) return
 
     const playerReady = streamingAudioPlayer.init()
@@ -364,6 +517,7 @@ export const usePlayerStore = defineStore('player', () => {
         stop()
       } else {
         currentIndex.value = Math.min(currentIndex.value, queue.value.length - 1)
+        syncRestoredCurrentTrack()
       }
     }
   }
@@ -650,6 +804,8 @@ export const usePlayerStore = defineStore('player', () => {
     queue,
     currentIndex,
     playMode,
+    queueBackendAvailable,
+    queueSyncError,
     currentTrack,
     formattedCurrentTime,
     formattedDuration,

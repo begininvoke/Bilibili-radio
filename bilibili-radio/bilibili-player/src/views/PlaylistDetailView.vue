@@ -3,7 +3,7 @@
     <template v-if="playlist">
       <div class="detail-top">
         <div class="detail-cover">
-          <img v-if="playlist.cover" :src="playlist.cover" :alt="playlist.name" />
+          <img v-if="playlist.cover" :src="mediaUrl(playlist.cover)" :alt="playlist.name" />
           <div v-else class="cover-fallback">
             <AppIcon name="list" :size="40" />
           </div>
@@ -58,6 +58,7 @@ import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
+import { mediaUrl } from '@/api/client'
 import type { Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
 import TrackRow from '@/components/TrackRow.vue'

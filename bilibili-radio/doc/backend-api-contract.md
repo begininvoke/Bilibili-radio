@@ -139,6 +139,24 @@
 }
 ```
 
+### `GET /api/tracks/<bvid>/intro`
+
+返回播放详情页简介面板数据。可通过 `?cid=` 指定 P，或使用 `GET /api/tracks/<bvid>/<cid>/intro`。
+
+### `GET /api/tracks/<bvid>/subtitles`
+
+返回播放详情页字幕面板数据。可通过 `?cid=` 指定 P，或使用 `GET /api/tracks/<bvid>/<cid>/subtitles`。
+
+### `GET /api/tracks/<bvid>/chapters`
+
+返回播放详情页章节面板数据。可通过 `?cid=` 指定 P，或使用 `GET /api/tracks/<bvid>/<cid>/chapters`。
+
+### `GET /api/tracks/<bvid>/comments?page=&page_size=`
+
+返回播放详情页评论区面板数据。也支持 `GET /api/tracks/<bvid>/<cid>/comments?page=&page_size=`。
+
+这些接口均返回前端可消费结构，不透传 B站原始响应。
+
 ## 本地库 API
 
 ### `GET /api/library/recent`
@@ -246,6 +264,44 @@
 
 返回指定 Track 的继续播放位置。
 
+## 播放队列 API
+
+### `GET /api/player/queue`
+
+返回当前播放队列快照。
+
+### `PUT /api/player/queue`
+
+保存当前播放队列快照。
+
+```json
+{
+  "queue": [],
+  "currentIndex": -1,
+  "playMode": "order"
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "queue": [],
+    "currentIndex": -1,
+    "playMode": "order",
+    "updatedAt": "2026-07-21T14:00:00+08:00"
+  }
+}
+```
+
+`playMode` 支持 `order | loop | single | shuffle`。
+
+### `DELETE /api/player/queue`
+
+清空当前播放队列，并保留空队列状态，防止刷新后从旧 localStorage 复活。
+
 ## 设置 API
 
 ### `GET /api/settings`
@@ -292,3 +348,141 @@
 - `GET /api/bili/favorites`
 - `POST /api/library/playlists/<id>/import/favorite`
 - `POST /api/analysis/events`
+
+## Round 5/6 API Addendum
+
+### Auth
+
+#### `GET /api/auth/status?refresh=false`
+
+Returns local Bilibili login state. Raw cookies never leave the backend.
+
+```json
+{
+  "success": true,
+  "data": {
+    "qrLoginEnabled": true,
+    "isLoggedIn": true,
+    "user": {
+      "mid": 123,
+      "name": "UP主",
+      "face": "https://i0.hdslb.com/face.jpg",
+      "level": 5,
+      "vipType": 2
+    },
+    "cookieUpdatedAt": "2026-07-20T22:30:00+08:00"
+  }
+}
+```
+
+#### `GET /api/auth/qrcode`
+
+Creates a Bilibili QR login session.
+
+```json
+{
+  "success": true,
+  "data": {
+    "qrcodeKey": "key",
+    "url": "https://account.bilibili.com/h5/account-h5/auth/scan-web?...",
+    "expiresAt": "2026-07-20T22:33:00+08:00",
+    "pollIntervalMs": 2000
+  }
+}
+```
+
+#### `GET /api/auth/qrcode/status?qrcodeKey=`
+
+Polls QR login status. `status` is one of `waiting | scanned | confirmed | expired | unknown`.
+When confirmed, the backend saves encrypted cookies and returns the normalized user profile.
+
+#### `GET /api/auth/profile?refresh=true`
+
+Refreshes and returns the logged-in Bilibili profile. Returns `AUTH_REQUIRED` when no valid login exists.
+
+#### `POST /api/auth/logout`
+
+Deletes backend-stored Bilibili auth state.
+
+### Cover
+
+#### `GET /api/tracks/<bvid>/cover?cid=`
+
+#### `GET /api/tracks/<bvid>/<cid>/cover`
+
+Returns cover metadata from the Bilibili video detail API. `videoCover` comes from `data.pic`; P-level `pageCover` comes from `data.pages[].first_frame` when available.
+
+```json
+{
+  "success": true,
+  "data": {
+    "bvid": "BVxxx",
+    "cid": 123,
+    "cover": "https://i0.hdslb.com/p-first-frame.jpg",
+    "videoCover": "https://i0.hdslb.com/archive-cover.jpg",
+    "pageCover": "https://i0.hdslb.com/p-first-frame.jpg",
+    "ownerFace": "https://i0.hdslb.com/face.jpg",
+    "pages": []
+  }
+}
+```
+
+### Bilibili Favorites
+
+#### `GET /api/bili/favorites?upMid=`
+
+Returns favorite folders for the logged-in user. If `upMid` is omitted, backend reads it from the current login profile.
+
+```json
+{
+  "success": true,
+  "data": {
+    "folders": [
+      {
+        "mediaId": 123,
+        "id": 123,
+        "fid": 456,
+        "title": "默认收藏夹",
+        "cover": "https://...",
+        "mediaCount": 20
+      }
+    ]
+  }
+}
+```
+
+#### `GET /api/bili/favorites/<media_id>/tracks?page=1&page_size=20`
+
+Returns favorite contents normalized to `Track[]`. Deleted or unavailable entries are counted in `unavailable`.
+
+#### `POST /api/library/playlists/import/favorite`
+
+Creates a local playlist from a Bilibili favorite folder.
+
+```json
+{
+  "mediaId": 123,
+  "name": "导入的收藏夹",
+  "maxPages": 10,
+  "pageSize": 20
+}
+```
+
+#### `POST /api/library/playlists/<id>/import/favorite`
+
+Imports a Bilibili favorite folder into an existing playlist. Both import endpoints reuse the existing playlist batch service and return the same `added / duplicated / unavailable` counters.
+
+### Analysis Events
+
+#### `POST /api/analysis/events`
+
+Reserved event ingress for AMEM and future daily recommendation services.
+
+```json
+{
+  "event": "favorite_imported",
+  "trackId": "bili:BVxxx:cid:123",
+  "sessionId": "uuid",
+  "payload": {}
+}
+```

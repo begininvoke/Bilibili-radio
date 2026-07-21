@@ -103,6 +103,102 @@ export interface TrackCoverInfo {
   }>
 }
 
+export interface PlayerQueueSnapshot {
+  queue: Track[]
+  currentIndex: number
+  playMode: PlayMode
+  updatedAt?: string | null
+}
+
+export interface TrackIntro {
+  bvid: string
+  cid?: number | null
+  title: string
+  description: string
+  dynamic: string
+  owner: {
+    mid: number
+    name: string
+    face: string
+  }
+  publishedAt?: string | null
+  stats: {
+    view: number
+    danmaku: number
+    reply: number
+    favorite: number
+    coin: number
+    share: number
+    like: number
+  }
+  pages: Array<{
+    cid: number
+    page: number
+    title: string
+    duration: number
+  }>
+}
+
+export interface TrackSubtitleInfo {
+  id: number
+  lan: string
+  lanDoc: string
+  url: string
+  authorMid: number
+  type: number
+}
+
+export interface TrackSubtitleLine {
+  from: number
+  to: number
+  text: string
+}
+
+export interface TrackSubtitles {
+  bvid: string
+  cid: number
+  needLogin: boolean
+  subtitles: TrackSubtitleInfo[]
+  activeSubtitleId?: number | null
+  lines: TrackSubtitleLine[]
+}
+
+export interface TrackChapter {
+  from: number
+  to: number
+  title: string
+  cover: string
+}
+
+export interface TrackChapters {
+  bvid: string
+  cid: number
+  chapters: TrackChapter[]
+}
+
+export interface TrackComment {
+  id: string
+  author: {
+    mid: number
+    name: string
+    avatar: string
+  }
+  message: string
+  like: number
+  replyCount: number
+  createdAt?: string | null
+}
+
+export interface TrackComments {
+  bvid: string
+  aid: number
+  page: number
+  pageSize: number
+  total: number
+  hasMore: boolean
+  comments: TrackComment[]
+}
+
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
 /** 播放模式：顺序播放 / 列表循环 / 单曲循环 / 随机 */

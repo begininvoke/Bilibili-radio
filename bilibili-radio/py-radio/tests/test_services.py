@@ -2,13 +2,28 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from analysis_service import AnalysisService
+from auth_service import AuthService
 from bili_client import BiliClient
+from constant import BilibiliAPI as APIConst
+from database import get_connection
 from library_service import LibraryService
 from models import AudioStreamInfo, Track, make_track_id
 from playback_service import PlaybackService
+from queue_service import PlayerQueueService
 from settings_service import SettingsService
 from stream_service import StreamService
-from track_service import normalize_search_item, parse_duration
+from track_service import (
+    cover_info_from_video_data,
+    normalize_player_chapters,
+    normalize_player_subtitles,
+    normalize_reply_comments,
+    normalize_search_item,
+    normalize_subtitle_lines,
+    normalize_video_detail,
+    normalize_video_intro,
+    parse_duration,
+)
 
 
 VALID_BVID = "BV1Q541167Qg"
@@ -40,13 +55,38 @@ class TrackServiceTests(unittest.TestCase):
         self.assertEqual(track.play_count, 123)
         self.assertTrue(track.published_at.endswith("+08:00"))
 
+    def test_video_detail_uses_page_first_frame_as_track_cover(self):
+        detail = normalize_video_detail(
+            {
+                "bvid": VALID_BVID,
+                "cid": 1,
+                "title": "Multi Part",
+                "pic": "http://i0.hdslb.com/video.jpg",
+                "owner": {"name": "UP"},
+                "pages": [
+                    {"cid": 1, "page": 1, "part": "P1", "duration": 60, "first_frame": "//i0.hdslb.com/p1.jpg"},
+                    {"cid": 2, "page": 2, "part": "P2", "duration": 60},
+                ],
+            }
+        )
+
+        self.assertEqual(detail.pages[0].cover, "https://i0.hdslb.com/p1.jpg")
+        self.assertEqual(detail.pages[1].cover, "https://i0.hdslb.com/video.jpg")
+
+
+class FakeCookie:
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, reason="OK"):
+    def __init__(self, status_code=200, payload=None, reason="OK", cookies=None):
         self.status_code = status_code
         self._payload = payload or {}
         self.reason = reason
         self.headers = {"content-type": "application/json"}
+        self.cookies = cookies or []
 
     def json(self):
         return self._payload
@@ -112,6 +152,55 @@ class BiliClientTests(unittest.TestCase):
 
         self.assertEqual(selected["id"], 30232)
 
+    def test_favorite_tracks_are_normalized_and_authenticated(self):
+        class FavoriteSession:
+            def __init__(self):
+                self.headers = {}
+                self.last_headers = None
+
+            def get(self, url, **kwargs):
+                self.last_headers = kwargs.get("headers")
+                if url != APIConst.FAVORITE_RESOURCE_URL:
+                    raise AssertionError(f"Unexpected URL: {url}")
+                return FakeResponse(
+                    payload={
+                        "code": 0,
+                        "data": {
+                            "info": {
+                                "id": 12,
+                                "title": "Fav",
+                                "media_count": 2,
+                                "cover": "//i0.hdslb.com/fav.jpg",
+                            },
+                            "has_more": False,
+                            "medias": [
+                                {
+                                    "bvid": VALID_BVID,
+                                    "title": "Fav Track",
+                                    "cover": "//i0.hdslb.com/cover.jpg",
+                                    "duration": 62,
+                                    "upper": {"name": "UP"},
+                                    "cnt_info": {"play": 9},
+                                    "pubtime": 1784541600,
+                                },
+                                {"title": "Unavailable"},
+                            ],
+                        },
+                    }
+                )
+
+        session = FavoriteSession()
+        client = BiliClient(cookie_provider=lambda: "SESSDATA=abc")
+        client.session = session
+
+        result = client.list_favorite_tracks(12)
+
+        self.assertEqual(result["folder"]["title"], "Fav")
+        self.assertEqual(result["tracks"][0]["bvid"], VALID_BVID)
+        self.assertEqual(result["tracks"][0]["cover"], "https://i0.hdslb.com/cover.jpg")
+        self.assertEqual(result["unavailable"], 1)
+        self.assertEqual(session.last_headers["Cookie"], "SESSDATA=abc")
+
 
 class LibraryServiceTests(unittest.TestCase):
     def setUp(self):
@@ -164,6 +253,97 @@ class LibraryServiceTests(unittest.TestCase):
 
         self.assertEqual(result["removed"], 1)
         self.assertEqual(self.service.list_recent(), [])
+
+
+class PlayerQueueServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.sqlite3"
+        self.service = PlayerQueueService(self.db_path)
+        self.tracks = [
+            Track(bvid=VALID_BVID, cid=123, title="P1", owner="UP", duration=100),
+            Track(bvid=VALID_BVID, cid=456, title="P2", owner="UP", duration=120),
+        ]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_queue_snapshot_survives_new_service_instance(self):
+        saved = self.service.save_queue(self.tracks, current_index=1, play_mode="loop")
+
+        reloaded = PlayerQueueService(self.db_path).get_queue()
+
+        self.assertEqual(saved["currentIndex"], 1)
+        self.assertEqual(reloaded["playMode"], "loop")
+        self.assertEqual([track["cid"] for track in reloaded["queue"]], [123, 456])
+
+    def test_empty_queue_keeps_state_row_to_avoid_local_resurrection(self):
+        self.service.save_queue(self.tracks, current_index=0, play_mode="shuffle")
+        cleared = self.service.clear_queue()
+
+        self.assertEqual(cleared["queue"], [])
+        self.assertEqual(cleared["currentIndex"], -1)
+        self.assertIsNotNone(cleared["updatedAt"])
+
+
+class AuthServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.sqlite3"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_qr_poll_success_saves_encrypted_cookie_and_profile(self):
+        class AuthSession:
+            def __init__(self):
+                self.headers = {}
+
+            def get(self, url, **kwargs):
+                if url == APIConst.QR_GENERATE_URL:
+                    return FakeResponse(
+                        payload={
+                            "code": 0,
+                            "data": {
+                                "url": "https://account.bilibili.com/scan?qrcode_key=key1",
+                                "qrcode_key": "key1",
+                            },
+                        }
+                    )
+                if url == APIConst.QR_POLL_URL:
+                    return FakeResponse(
+                        payload={"code": 0, "data": {"code": 0, "refresh_token": "rt1"}},
+                        cookies=[
+                            FakeCookie("SESSDATA", "abc"),
+                            FakeCookie("DedeUserID", "123"),
+                        ],
+                    )
+                if url == APIConst.NAV_URL:
+                    return FakeResponse(
+                        payload={
+                            "code": 0,
+                            "data": {
+                                "isLogin": True,
+                                "mid": 123,
+                                "uname": "Tester",
+                                "face": "//i0.hdslb.com/face.jpg",
+                                "level_info": {"current_level": 5},
+                                "vip": {"type": 2},
+                            },
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        service = AuthService(self.db_path, session=AuthSession())
+        qr = service.create_qrcode()
+        result = service.poll_qrcode(qr["qrcodeKey"])
+
+        self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(result["user"]["mid"], 123)
+        self.assertEqual(service.get_cookie_header(), "SESSDATA=abc; DedeUserID=123")
+        with get_connection(self.db_path) as conn:
+            row = conn.execute("SELECT cookie_encrypted FROM auth_state").fetchone()
+        self.assertNotIn("SESSDATA=abc", row["cookie_encrypted"])
 
 
 class SettingsServiceTests(unittest.TestCase):
@@ -243,6 +423,126 @@ class PlaybackServiceTests(unittest.TestCase):
 
         self.assertTrue(result["skipped"])
         self.assertEqual(self.service.list_recent(), [])
+
+
+class AnalysisServiceTests(unittest.TestCase):
+    def test_record_event_persists_analysis_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            service = AnalysisService(db_path)
+            result = service.record_event(
+                {
+                    "event": "favorite_imported",
+                    "trackId": f"bili:{VALID_BVID}:cid:123",
+                    "payload": {"added": 1},
+                }
+            )
+
+            with get_connection(db_path) as conn:
+                row = conn.execute("SELECT event, track_id FROM analysis_events").fetchone()
+
+        self.assertGreater(result["id"], 0)
+        self.assertEqual(row["event"], "favorite_imported")
+        self.assertEqual(row["track_id"], f"bili:{VALID_BVID}:cid:123")
+
+
+class CoverInfoTests(unittest.TestCase):
+    def test_cover_info_returns_video_cover_and_page_first_frame(self):
+        result = cover_info_from_video_data(
+            {
+                "bvid": VALID_BVID,
+                "pic": "http://i0.hdslb.com/bfs/archive/main.jpg",
+                "owner": {"face": "//i0.hdslb.com/face.jpg"},
+                "pages": [
+                    {"cid": 1, "page": 1, "part": "P1", "first_frame": "//i0.hdslb.com/p1.jpg"},
+                    {"cid": 2, "page": 2, "part": "P2", "first_frame": "http://i1.hdslb.com/p2.jpg"},
+                ],
+            },
+            cid=2,
+        )
+
+        self.assertEqual(result["videoCover"], "https://i0.hdslb.com/bfs/archive/main.jpg")
+        self.assertEqual(result["cover"], "https://i1.hdslb.com/p2.jpg")
+        self.assertEqual(result["pageCover"], "https://i1.hdslb.com/p2.jpg")
+        self.assertEqual(result["pages"][0]["firstFrame"], "https://i0.hdslb.com/p1.jpg")
+
+
+class TrackDetailPanelTests(unittest.TestCase):
+    def test_intro_normalizes_description_stats_and_pages(self):
+        result = normalize_video_intro(
+            {
+                "bvid": VALID_BVID,
+                "cid": 1,
+                "title": "Title",
+                "desc": "Line 1\nLine 2",
+                "dynamic": "Dynamic",
+                "pubdate": 1784541600,
+                "owner": {"mid": 7, "name": "UP", "face": "//i0.hdslb.com/face.jpg"},
+                "stat": {"view": 100, "reply": 3, "like": 9},
+                "pages": [{"cid": 1, "page": 1, "part": "Part", "duration": 62}],
+            }
+        )
+
+        self.assertEqual(result["description"], "Line 1\nLine 2")
+        self.assertEqual(result["owner"]["face"], "https://i0.hdslb.com/face.jpg")
+        self.assertEqual(result["stats"]["view"], 100)
+        self.assertEqual(result["pages"][0]["title"], "Part")
+
+    def test_subtitle_and_chapter_payloads_are_frontend_ready(self):
+        player_data = {
+            "need_login_subtitle": False,
+            "subtitle": {
+                "subtitles": [
+                    {
+                        "id": 1,
+                        "lan": "zh-CN",
+                        "lan_doc": "中文",
+                        "subtitle_url": "//i0.hdslb.com/subtitle.json",
+                    }
+                ]
+            },
+            "view_points": [{"from": 1, "to": 3, "content": "Hook", "imgUrl": "//i0.hdslb.com/c.jpg"}],
+        }
+
+        subtitles = normalize_player_subtitles(
+            player_data,
+            VALID_BVID,
+            123,
+            lines=normalize_subtitle_lines({"body": [{"from": 1.2, "to": 2.5, "content": "<b>Hi</b>"}]}),
+            selected_subtitle_id=1,
+        )
+        chapters = normalize_player_chapters(player_data, VALID_BVID, 123)
+
+        self.assertEqual(subtitles["subtitles"][0]["url"], "https://i0.hdslb.com/subtitle.json")
+        self.assertEqual(subtitles["lines"][0]["text"], "Hi")
+        self.assertEqual(chapters["chapters"][0]["title"], "Hook")
+
+    def test_comments_are_normalized(self):
+        result = normalize_reply_comments(
+            {
+                "data": {
+                    "cursor": {"all_count": 10, "is_end": False},
+                    "replies": [
+                        {
+                            "rpid": 99,
+                            "member": {"mid": 8, "uname": "User", "avatar": "//i0.hdslb.com/a.jpg"},
+                            "content": {"message": "Nice"},
+                            "like": 4,
+                            "rcount": 2,
+                            "ctime": 1784541600,
+                        }
+                    ],
+                }
+            },
+            VALID_BVID,
+            100,
+            1,
+            20,
+        )
+
+        self.assertEqual(result["total"], 10)
+        self.assertTrue(result["hasMore"])
+        self.assertEqual(result["comments"][0]["author"]["avatar"], "https://i0.hdslb.com/a.jpg")
 
 
 class FakeBiliClient:
@@ -386,6 +686,13 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual(preview_payload["data"]["unavailable"], 1)
         self.assertEqual(write.status_code, 200)
         self.assertEqual(write_payload["data"]["added"], 1)
+
+    def test_image_proxy_host_allowlist(self):
+        import app as app_module
+
+        self.assertTrue(app_module._is_allowed_image_host("i0.hdslb.com"))
+        self.assertTrue(app_module._is_allowed_image_host("member.bilibili.com"))
+        self.assertFalse(app_module._is_allowed_image_host("example.com"))
 
 
 class ModelTests(unittest.TestCase):

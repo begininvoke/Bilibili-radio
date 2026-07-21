@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+from urllib.parse import urlparse
 
-from flask import Flask, request
+import requests
+from flask import Flask, Response, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from werkzeug.exceptions import HTTPException
 
+from analysis_service import AnalysisService
 from auth_service import AuthService
 from bili_client import BiliClient
 from constant import Server
@@ -15,6 +18,7 @@ from error_code import APIError, ErrorCode, ErrorMessage
 from library_service import LibraryService
 from models import AudioStreamInfo, Track, VideoInfo, make_track_id, normalize_bvid
 from playback_service import PlaybackService
+from queue_service import PlayerQueueService
 from result import Result
 from settings_service import SettingsService
 from stream_service import StreamService
@@ -24,12 +28,14 @@ app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-bili_client = BiliClient()
+auth_service = AuthService()
+bili_client = BiliClient(cookie_provider=auth_service.get_cookie_header)
 library_service = LibraryService()
 playback_service = PlaybackService()
+queue_service = PlayerQueueService()
 stream_service = StreamService(bili_client)
-auth_service = AuthService()
 settings_service = SettingsService()
+analysis_service = AnalysisService()
 
 current_video_info: Optional[VideoInfo] = None
 current_audio_info: Optional[AudioStreamInfo] = None
@@ -77,12 +83,70 @@ def search_tracks():
     ).json()
 
 
+@app.get("/api/images/proxy")
+def proxy_image():
+    image_url = request.args.get("url", "")
+    return _proxy_image_url(image_url)
+
+
 @app.get("/api/tracks/<bvid>")
 def get_track_detail(bvid: str):
     detail = bili_client.get_video_detail(bvid)
     for track in detail.pages:
         library_service.upsert_track(track)
     return Result.ok(detail.to_dict()).json()
+
+
+@app.get("/api/tracks/<bvid>/cover")
+def get_track_cover_default(bvid: str):
+    cid = request.args.get("cid", type=int)
+    return Result.ok(bili_client.get_cover_info(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/<int:cid>/cover")
+def get_track_cover_part(bvid: str, cid: int):
+    return Result.ok(bili_client.get_cover_info(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/intro")
+def get_track_intro_default(bvid: str):
+    cid = request.args.get("cid", type=int)
+    return Result.ok(bili_client.get_video_intro(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/<int:cid>/intro")
+def get_track_intro_part(bvid: str, cid: int):
+    return Result.ok(bili_client.get_video_intro(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/subtitles")
+def get_track_subtitles_default(bvid: str):
+    cid = request.args.get("cid", type=int)
+    return Result.ok(bili_client.get_track_subtitles(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/<int:cid>/subtitles")
+def get_track_subtitles_part(bvid: str, cid: int):
+    return Result.ok(bili_client.get_track_subtitles(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/chapters")
+def get_track_chapters_default(bvid: str):
+    cid = request.args.get("cid", type=int)
+    return Result.ok(bili_client.get_track_chapters(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/<int:cid>/chapters")
+def get_track_chapters_part(bvid: str, cid: int):
+    return Result.ok(bili_client.get_track_chapters(bvid, cid=cid)).json()
+
+
+@app.get("/api/tracks/<bvid>/comments")
+@app.get("/api/tracks/<bvid>/<int:_cid>/comments")
+def get_track_comments(bvid: str, _cid: Optional[int] = None):
+    page = _int_arg("page", 1)
+    page_size = _int_arg("page_size", _int_arg("pageSize", 20))
+    return Result.ok(bili_client.get_track_comments(bvid, page=page, page_size=page_size)).json()
 
 
 @app.get("/api/tracks/resolve")
@@ -144,6 +208,22 @@ def get_player_status():
         "video_info": current_video_info.to_track().to_dict() if current_video_info else None,
     }
     return Result.ok(status).json()
+
+
+@app.route("/api/player/queue", methods=["GET", "PUT", "DELETE"])
+def player_queue():
+    if request.method == "GET":
+        return Result.ok(queue_service.get_queue()).json()
+    if request.method == "DELETE":
+        return Result.ok(queue_service.clear_queue()).json()
+
+    payload = _json_body()
+    result = queue_service.save_queue(
+        _queue_tracks_from_payload(payload),
+        current_index=int(payload.get("currentIndex") or payload.get("current_index") or -1),
+        play_mode=str(payload.get("playMode") or payload.get("play_mode") or "order"),
+    )
+    return Result.ok(result).json()
 
 
 @app.post("/api/player/stop")
@@ -266,6 +346,58 @@ def batch_playlist_items(playlist_id: str):
     return Result.ok(result).json()
 
 
+@app.post("/api/library/playlists/import/favorite")
+def import_favorite_to_new_playlist():
+    payload = _json_body()
+    favorite = _favorite_import_payload(payload)
+    tracks = favorite.pop("tracks")
+    name = str(payload.get("name") or favorite["folder"].get("title") or "").strip()
+    if not name:
+        name = f"Bilibili favorite {favorite['mediaId']}"
+    playlist = library_service.create_playlist(name)
+    result = library_service.batch_add_playlist_items(playlist["id"], tracks=tracks)
+    analysis_service.record_event(
+        {
+            "event": "favorite_imported",
+            "payload": {
+                "mediaId": favorite["mediaId"],
+                "playlistId": playlist["id"],
+                "added": result["added"],
+                "duplicated": result["duplicated"],
+                "unavailable": result["unavailable"],
+            },
+        }
+    )
+    return Result.ok(
+        {
+            "playlist": library_service.get_playlist(playlist["id"]),
+            "import": result,
+            "favorite": favorite,
+        }
+    ).json_with_status(201)
+
+
+@app.post("/api/library/playlists/<playlist_id>/import/favorite")
+def import_favorite_to_playlist(playlist_id: str):
+    payload = _json_body()
+    favorite = _favorite_import_payload(payload)
+    tracks = favorite.pop("tracks")
+    result = library_service.batch_add_playlist_items(playlist_id, tracks=tracks)
+    analysis_service.record_event(
+        {
+            "event": "favorite_imported",
+            "payload": {
+                "mediaId": favorite["mediaId"],
+                "playlistId": playlist_id,
+                "added": result["added"],
+                "duplicated": result["duplicated"],
+                "unavailable": result["unavailable"],
+            },
+        }
+    )
+    return Result.ok({"import": result, "favorite": favorite}).json()
+
+
 @app.post("/api/playback/events")
 def record_playback_event():
     result = playback_service.record_event(_json_body())
@@ -285,7 +417,47 @@ def playback_resume(track_id: str):
 
 @app.get("/api/auth/status")
 def auth_status():
-    return Result.ok({"qrLoginEnabled": auth_service.qr_login_enabled()}).json()
+    return Result.ok(auth_service.get_status(refresh=_bool_arg("refresh", False))).json()
+
+
+@app.get("/api/auth/qrcode")
+def auth_qrcode():
+    return Result.ok(auth_service.create_qrcode()).json()
+
+
+@app.get("/api/auth/qrcode/status")
+def auth_qrcode_status():
+    qrcode_key = request.args.get("qrcodeKey") or request.args.get("qrcode_key") or ""
+    return Result.ok(auth_service.poll_qrcode(qrcode_key)).json()
+
+
+@app.get("/api/auth/profile")
+def auth_profile():
+    return Result.ok(auth_service.get_profile(refresh=_bool_arg("refresh", True))).json()
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    return Result.ok(auth_service.logout()).json()
+
+
+@app.get("/api/bili/favorites")
+def list_bili_favorites():
+    up_mid = request.args.get("up_mid", type=int) or request.args.get("upMid", type=int)
+    folders = bili_client.list_favorite_folders(up_mid=up_mid)
+    return Result.ok({"folders": [folder.to_dict() for folder in folders]}).json()
+
+
+@app.get("/api/bili/favorites/<int:media_id>/tracks")
+def list_bili_favorite_tracks(media_id: int):
+    page = _int_arg("page", 1)
+    page_size = _int_arg("page_size", _int_arg("pageSize", 20))
+    return Result.ok(bili_client.list_favorite_tracks(media_id, page=page, page_size=page_size)).json()
+
+
+@app.post("/api/analysis/events")
+def record_analysis_event():
+    return Result.ok(analysis_service.record_event(_json_body())).json_with_status(202)
 
 
 @app.get("/api/settings")
@@ -421,6 +593,31 @@ def _int_arg(name: str, default: int) -> int:
         return default
 
 
+def _bool_arg(name: str, default: bool) -> bool:
+    value = request.args.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _favorite_import_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    media_id = int(payload.get("mediaId") or payload.get("media_id") or 0)
+    if media_id <= 0:
+        raise APIError.validation_error("mediaId is required")
+
+    max_pages = min(max(int(payload.get("maxPages") or payload.get("max_pages") or 10), 1), 50)
+    page_size = min(max(int(payload.get("pageSize") or payload.get("page_size") or 20), 1), 20)
+    favorite = bili_client.list_all_favorite_tracks(
+        media_id,
+        max_pages=max_pages,
+        page_size=page_size,
+    )
+    tracks = favorite.pop("tracks")
+    favorite["tracks"] = tracks
+    favorite["fetched"] = len(tracks)
+    return favorite
+
+
 def _resolve_track_from_payload(payload: dict[str, Any]) -> Track:
     candidate = payload.get("track")
     if isinstance(candidate, dict):
@@ -455,6 +652,13 @@ def _tracks_from_payload(payload: dict[str, Any]) -> list[Track]:
     return result
 
 
+def _queue_tracks_from_payload(payload: dict[str, Any]) -> list[Track]:
+    queue = payload.get("queue")
+    if isinstance(queue, list):
+        return [Track.from_dict(item) for item in queue if isinstance(item, dict)]
+    return _tracks_from_payload(payload)
+
+
 def _track_ids_from_payload(payload: dict[str, Any]) -> list[str]:
     track_ids = payload.get("trackIds") or payload.get("track_ids") or []
     if not isinstance(track_ids, list):
@@ -484,6 +688,52 @@ def _stream_info_payload(bvid: str, cid: Optional[int], quality: Optional[str]) 
 
 def _absolute_url(path: str) -> str:
     return f"{request.host_url.rstrip('/')}{path}"
+
+
+def _proxy_image_url(image_url: str):
+    parsed = urlparse(image_url or "")
+    if parsed.scheme not in {"http", "https"}:
+        raise APIError.validation_error("image url must be http or https")
+    if not _is_allowed_image_host(parsed.hostname or ""):
+        raise APIError.validation_error("image host is not allowed")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.bilibili.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    }
+    try:
+        upstream = requests.get(image_url, headers=headers, stream=True, timeout=15)
+        upstream.raise_for_status()
+    except requests.Timeout:
+        raise APIError.request_timeout("image proxy")
+    except requests.RequestException as exc:
+        raise APIError.network_error(str(exc))
+
+    def generate():
+        for chunk in upstream.iter_content(chunk_size=8192):
+            if chunk:
+                yield chunk
+
+    response_headers = {
+        "Content-Type": upstream.headers.get("Content-Type", "image/jpeg"),
+        "Cache-Control": "public, max-age=86400",
+    }
+    if upstream.headers.get("Content-Length"):
+        response_headers["Content-Length"] = upstream.headers["Content-Length"]
+    return Response(generate(), status=upstream.status_code, headers=response_headers)
+
+
+def _is_allowed_image_host(hostname: str) -> bool:
+    host = hostname.lower()
+    return (
+        host == "hdslb.com"
+        or host.endswith(".hdslb.com")
+        or host == "bilibili.com"
+        or host.endswith(".bilibili.com")
+        or host == "bilivideo.com"
+        or host.endswith(".bilivideo.com")
+    )
 
 
 if __name__ == "__main__":

@@ -1,65 +1,91 @@
 <template>
   <div class="page favorites">
-    <!-- 收藏夹列表：封面卡片 -->
-    <template v-if="!activeFolder">
-      <header class="fav-header">
-        <h1>B站收藏夹</h1>
-        <span class="mock-tag">示例数据</span>
-      </header>
-      <div class="folder-grid">
-        <div
-          v-for="f in favoriteFolders"
-          :key="f.id"
+    <header class="fav-header">
+      <div>
+        <h1>B 站收藏夹</h1>
+        <p>读取当前已登录账号的收藏夹</p>
+      </div>
+      <button v-if="auth.isLoggedIn" class="ghost-btn" :disabled="folderLoading" @click="loadFolders">
+        <AppIcon name="repeat" :size="16" />
+        <span>刷新</span>
+      </button>
+    </header>
+
+    <section v-if="!auth.isLoggedIn" class="login-required">
+      <h2>需要登录 B 站</h2>
+      <p>收藏夹属于账号数据，请先扫码登录。</p>
+      <button class="primary-btn" @click="goLogin">去登录</button>
+    </section>
+
+    <template v-else-if="!activeFolderId">
+      <div v-if="folderLoading" class="loading-state">
+        <LoadingDots />
+        <span>正在读取收藏夹</span>
+      </div>
+      <p v-else-if="errorMessage" class="error-text">{{ errorMessage }}</p>
+      <div v-else class="folder-grid">
+        <button
+          v-for="folder in folders"
+          :key="folder.mediaId"
           class="folder-card"
-          @click="openFolder(f.id)"
+          @click="openFolder(folder.mediaId)"
         >
           <div class="folder-cover">
-            <img :src="f.cover" :alt="f.title" loading="lazy" />
-            <span class="folder-count">{{ f.count }}</span>
+            <img v-if="folder.cover" :src="mediaUrl(folder.cover)" :alt="folder.title" loading="lazy" />
+            <div v-else class="cover-placeholder">{{ folder.title.slice(0, 1) }}</div>
+            <span class="folder-count">{{ folder.mediaCount }}</span>
           </div>
-          <div class="folder-title">{{ f.title }}</div>
-        </div>
+          <div class="folder-title">{{ folder.title }}</div>
+        </button>
       </div>
     </template>
 
-    <!-- 收藏夹内容：紧凑行列表 -->
     <template v-else>
-      <header class="detail-header">
-        <button class="back-btn" @click="closeFolder">
-          <AppIcon name="chevron" :size="18" class="back-icon" />
-          <span>全部收藏夹</span>
-        </button>
-      </header>
+      <button class="back-btn" @click="closeFolder">
+        <AppIcon name="chevron" :size="18" class="back-icon" />
+        <span>全部收藏夹</span>
+      </button>
+
       <div class="detail-top">
-        <img class="detail-cover" :src="activeFolder.cover" :alt="activeFolder.title" />
+        <div class="detail-cover">
+          <img v-if="activeCover" :src="mediaUrl(activeCover)" :alt="activeFolder?.title" />
+          <div v-else class="cover-placeholder">{{ activeFolder?.title?.slice(0, 1) || 'F' }}</div>
+        </div>
         <div class="detail-info">
           <span class="detail-kind">收藏夹</span>
-          <h1 class="detail-title">{{ activeFolder.title }}</h1>
-          <p class="detail-meta">{{ activeFolder.count }} 个内容</p>
+          <h1 class="detail-title">{{ activeFolder?.title || `收藏夹 ${activeFolderId}` }}</h1>
+          <p class="detail-meta">{{ activeFolder?.mediaCount ?? activeTracks.length }} 个内容</p>
           <div class="detail-actions">
-            <button class="primary-btn" @click="playAll">
+            <button class="primary-btn" :disabled="activeTracks.length === 0" @click="playAll">
               <AppIcon name="play" :size="16" />
               <span>播放全部</span>
             </button>
-            <button class="ghost-btn" @click="importAsPlaylist">
+            <button class="ghost-btn" :disabled="importing" @click="importAsPlaylist">
               <AppIcon name="import" :size="16" />
-              <span>导入为本地歌单</span>
+              <span>{{ importing ? '正在导入' : '导入为本地歌单' }}</span>
             </button>
           </div>
+          <p v-if="notice" class="notice-text">{{ notice }}</p>
         </div>
       </div>
-      <div class="result-list">
+
+      <div v-if="trackLoading" class="loading-state">
+        <LoadingDots />
+        <span>正在读取收藏夹内容</span>
+      </div>
+      <p v-else-if="errorMessage" class="error-text">{{ errorMessage }}</p>
+      <div v-else class="result-list">
         <TrackRow
-          v-for="(t, i) in activeFolder.tracks"
-          :key="t.trackId ?? `${t.bvid}:${t.cid ?? i}`"
-          :track="t"
+          v-for="(track, i) in activeTracks"
+          :key="track.trackId ?? `${track.bvid}:${track.cid ?? i}`"
+          :track="track"
           :index="i"
-          :is-current="isCurrent(t)"
-          :is-playing="isPlaying && isCurrent(t)"
-          :is-liked="library.isLiked(t.bvid)"
-          @play="player.playList(activeFolder.tracks, i)"
-          @like="library.toggleLike(t)"
-          @enqueue="player.enqueue(t)"
+          :is-current="isCurrent(track)"
+          :is-playing="isPlaying && isCurrent(track)"
+          :is-liked="library.isLiked(track.bvid)"
+          @play="player.playList(activeTracks, i)"
+          @like="library.toggleLike(track)"
+          @enqueue="player.enqueue(track)"
         />
       </div>
     </template>
@@ -67,33 +93,109 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { usePlayerStore } from '@/stores/playerStore'
+import {
+  fetchBiliFavoriteFolders,
+  fetchBiliFavoriteTracks,
+  importBiliFavoriteAsPlaylist,
+  mediaUrl,
+} from '@/api/client'
+import { useAuthStore } from '@/stores/authStore'
 import { useLibraryStore } from '@/stores/libraryStore'
-import type { Track } from '@/types'
-import { favoriteFolders, getFavFolder } from '@/mock/data'
+import { usePlayerStore } from '@/stores/playerStore'
+import type { FavoriteFolder, Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
+import LoadingDots from '@/components/base/LoadingDots.vue'
 import TrackRow from '@/components/TrackRow.vue'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const player = usePlayerStore()
 const library = useLibraryStore()
 const { currentTrack, isPlaying } = storeToRefs(player)
 
-const activeFolder = computed(() => {
-  const id = route.query.folder as string | undefined
-  return id ? getFavFolder(id) : undefined
+const folders = ref<FavoriteFolder[]>([])
+const activeFolderDetail = ref<FavoriteFolder | null>(null)
+const activeTracks = ref<Track[]>([])
+const folderLoading = ref(false)
+const trackLoading = ref(false)
+const importing = ref(false)
+const errorMessage = ref<string | null>(null)
+const notice = ref<string | null>(null)
+
+const activeFolderId = computed(() => {
+  const raw = route.query.folder
+  const value = typeof raw === 'string' ? Number(raw) : 0
+  return Number.isFinite(value) && value > 0 ? value : 0
 })
 
-function openFolder(id: string) {
-  router.push({ path: '/favorites', query: { folder: id } })
+const activeFolder = computed(() => {
+  return activeFolderDetail.value ?? folders.value.find((folder) => folder.mediaId === activeFolderId.value)
+})
+
+const activeCover = computed(() => activeFolder.value?.cover || activeTracks.value[0]?.cover || '')
+
+watch(
+  () => activeFolderId.value,
+  (id) => {
+    notice.value = null
+    if (id) {
+      void loadFolderTracks(id)
+    } else {
+      activeFolderDetail.value = null
+      activeTracks.value = []
+    }
+  },
+  { immediate: true }
+)
+
+onMounted(async () => {
+  await auth.initialize()
+  if (auth.isLoggedIn) {
+    await loadFolders()
+  }
+})
+
+async function loadFolders() {
+  folderLoading.value = true
+  errorMessage.value = null
+  try {
+    folders.value = await fetchBiliFavoriteFolders()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '收藏夹读取失败'
+  } finally {
+    folderLoading.value = false
+  }
+}
+
+async function loadFolderTracks(mediaId: number) {
+  if (!auth.isLoggedIn) return
+  trackLoading.value = true
+  errorMessage.value = null
+  try {
+    const result = await fetchBiliFavoriteTracks(mediaId, 1, 20)
+    activeFolderDetail.value = result.folder
+    activeTracks.value = result.tracks
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '收藏夹内容读取失败'
+  } finally {
+    trackLoading.value = false
+  }
+}
+
+function openFolder(mediaId: number) {
+  router.push({ path: '/favorites', query: { folder: String(mediaId) } })
 }
 
 function closeFolder() {
   router.push({ path: '/favorites' })
+}
+
+function goLogin() {
+  router.push({ name: 'login', query: { redirect: route.fullPath } })
 }
 
 function isCurrent(track: Track): boolean {
@@ -105,13 +207,24 @@ function isCurrent(track: Track): boolean {
 }
 
 function playAll() {
-  if (activeFolder.value) player.playList(activeFolder.value.tracks, 0)
+  if (activeTracks.value.length) player.playList(activeTracks.value, 0)
 }
 
-function importAsPlaylist() {
-  if (!activeFolder.value) return
-  library.createPlaylist(activeFolder.value.title, activeFolder.value.tracks)
-  window.alert(`已导入为本地歌单：${activeFolder.value.title}`)
+async function importAsPlaylist() {
+  const folder = activeFolder.value
+  if (!folder || importing.value) return
+  importing.value = true
+  notice.value = null
+  errorMessage.value = null
+  try {
+    const result = await importBiliFavoriteAsPlaylist(folder.mediaId, folder.title)
+    await library.refreshFromBackend()
+    notice.value = `已导入 ${result.import.added} 首，重复 ${result.import.duplicated} 首，不可用 ${result.import.unavailable} 首`
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '导入失败'
+  } finally {
+    importing.value = false
+  }
 }
 </script>
 
@@ -123,11 +236,11 @@ function importAsPlaylist() {
   gap: 24px;
 }
 
-.fav-header,
-.detail-header {
+.fav-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .fav-header h1 {
@@ -136,12 +249,29 @@ function importAsPlaylist() {
   color: var(--color-text-primary);
 }
 
-.mock-tag {
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-  padding: 2px 8px;
+.fav-header p {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.login-required {
+  max-width: 420px;
+  padding: 24px;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: var(--radius-medium);
+  background: var(--color-bg-content);
+}
+
+.login-required h2 {
+  font-size: 18px;
+  color: var(--color-text-primary);
+}
+
+.login-required p {
+  margin: 8px 0 18px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
 }
 
 .folder-grid {
@@ -151,7 +281,7 @@ function importAsPlaylist() {
 }
 
 .folder-card {
-  cursor: pointer;
+  text-align: left;
 }
 
 .folder-cover {
@@ -162,15 +292,27 @@ function importAsPlaylist() {
   background: var(--color-bg-hover);
 }
 
-.folder-cover img {
+.folder-cover img,
+.detail-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 300ms ease;
 }
 
 .folder-card:hover .folder-cover img {
   transform: scale(1.04);
+  transition: transform 300ms ease;
+}
+
+.cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 28px;
+  font-weight: 700;
 }
 
 .folder-count {
@@ -191,14 +333,12 @@ function importAsPlaylist() {
 }
 
 .back-btn {
+  width: fit-content;
   display: flex;
   align-items: center;
   gap: 4px;
-  border: none;
-  background: transparent;
   color: var(--color-text-secondary);
   font-size: 14px;
-  cursor: pointer;
   padding: 6px 10px;
   border-radius: var(--radius-small);
   transition: background 160ms ease, color 160ms ease;
@@ -223,14 +363,17 @@ function importAsPlaylist() {
   width: 180px;
   height: 180px;
   border-radius: var(--radius-large);
-  object-fit: cover;
+  overflow: hidden;
+  background: var(--color-bg-hover);
   box-shadow: var(--shadow-popup);
+  flex-shrink: 0;
 }
 
 .detail-info {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .detail-kind {
@@ -244,7 +387,8 @@ function importAsPlaylist() {
   color: var(--color-text-primary);
 }
 
-.detail-meta {
+.detail-meta,
+.notice-text {
   font-size: 13px;
   color: var(--color-text-secondary);
 }
@@ -253,28 +397,28 @@ function importAsPlaylist() {
   display: flex;
   gap: 12px;
   margin-top: 8px;
+  flex-wrap: wrap;
 }
 
 .primary-btn,
 .ghost-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   height: 38px;
   padding: 0 18px;
-  border-radius: 19px;
+  border-radius: var(--radius-small);
   font-size: 14px;
-  cursor: pointer;
-  transition: background 160ms ease, border-color 160ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
 .primary-btn {
-  border: none;
   background: var(--color-primary);
   color: #fff;
 }
 
-.primary-btn:hover {
+.primary-btn:hover:not(:disabled) {
   background: var(--color-primary-hover);
 }
 
@@ -284,13 +428,49 @@ function importAsPlaylist() {
   color: var(--color-text-primary);
 }
 
-.ghost-btn:hover {
+.ghost-btn:hover:not(:disabled) {
   border-color: var(--color-primary);
   color: var(--color-primary);
+}
+
+.primary-btn:disabled,
+.ghost-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .result-list {
   display: flex;
   flex-direction: column;
+}
+
+.loading-state {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.error-text {
+  color: var(--color-primary);
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 20px;
+  }
+
+  .detail-top {
+    align-items: flex-start;
+  }
+
+  .detail-cover {
+    width: 112px;
+    height: 112px;
+  }
 }
 </style>

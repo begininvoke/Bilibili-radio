@@ -4,7 +4,7 @@
     <div class="player-left">
       <template v-if="track">
         <div class="mini-cover" @click="ui.openNowPlaying()">
-          <img v-if="track.cover" :src="track.cover" :alt="track.title" />
+          <img v-if="track.cover" :src="mediaUrl(track.cover)" :alt="track.title" />
           <div v-else class="cover-fallback">
             <AppIcon name="disc" :size="22" />
           </div>
@@ -109,6 +109,7 @@ import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
+import { mediaUrl } from '@/api/client'
 import type { PlayMode, Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
 import LoadingDots from '@/components/base/LoadingDots.vue'

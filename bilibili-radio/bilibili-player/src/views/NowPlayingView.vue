@@ -122,12 +122,25 @@
             <button v-else-if="subtitleError" class="panel-error" @click="loadActiveTab">{{ subtitleError }}</button>
             <div v-else-if="subtitles" class="subtitle-panel">
               <div v-if="subtitles.subtitles.length" class="subtitle-meta">
-                <span v-for="item in subtitles.subtitles" :key="item.id">{{ item.lanDoc || item.lan || '字幕' }}</span>
+                <span
+                  v-for="item in subtitles.subtitles"
+                  :key="item.id"
+                  :class="{ active: item.id === subtitles.activeSubtitleId }"
+                >
+                  {{ item.lanDoc || item.lan || '字幕' }}
+                </span>
               </div>
               <ol v-if="subtitles.lines.length" class="subtitle-lines">
-                <li v-for="line in subtitles.lines" :key="`${line.from}-${line.to}-${line.text}`">
-                  <span class="time-badge">{{ formatTimeLabel(line.from) }}</span>
-                  <span>{{ line.text }}</span>
+                <li
+                  v-for="(line, index) in subtitles.lines"
+                  :key="`${line.from}-${line.to}-${line.text}`"
+                  :data-subtitle-index="index"
+                  :class="{ active: index === activeSubtitleLineIndex }"
+                >
+                  <button type="button" class="subtitle-line-button" @click="player.seek(line.from)">
+                    <span class="time-badge">{{ formatTimeLabel(line.from) }}</span>
+                    <span>{{ line.text }}</span>
+                  </button>
                 </li>
               </ol>
               <p v-else class="panel-text muted">
@@ -152,7 +165,7 @@
             </div>
             <p v-else class="panel-text muted">B站暂未提供章节。</p>
           </template>
-          <template v-else>
+          <template v-else-if="activeTab === 'comments'">
             <div v-if="commentsLoading" class="panel-text muted">正在读取评论区…</div>
             <button v-else-if="commentsError" class="panel-error" @click="loadActiveTab">{{ commentsError }}</button>
             <div v-else-if="comments?.comments.length" class="comment-list">
@@ -182,6 +195,77 @@
               </span>
             </div>
             <p v-else class="panel-text muted">暂未读取到评论。</p>
+          </template>
+          <template v-else>
+            <div class="review-panel" aria-label="私人评价">
+              <div class="review-head">
+                <div>
+                  <h2>私人评价</h2>
+                  <p v-if="reviewUpdatedAt">{{ reviewUpdatedAt }}</p>
+                </div>
+                <span class="review-private">Private</span>
+              </div>
+
+              <div class="review-stars" role="radiogroup" aria-label="星级">
+                <button
+                  v-for="star in 5"
+                  :key="star"
+                  type="button"
+                  class="review-star"
+                  :class="{ active: star <= reviewRating }"
+                  :disabled="!track || reviewSaving"
+                  :aria-label="`${star} 星`"
+                  @click="reviewRating = star"
+                >
+                  <AppIcon :name="star <= reviewRating ? 'star-filled' : 'star'" :size="18" />
+                </button>
+              </div>
+
+              <div class="review-moods" aria-label="情绪">
+                <button
+                  v-for="mood in reviewMoods"
+                  :key="mood"
+                  type="button"
+                  class="review-mood"
+                  :class="{ active: reviewMood === mood }"
+                  :disabled="!track || reviewSaving"
+                  @click="reviewMood = mood"
+                >
+                  {{ mood }}
+                </button>
+              </div>
+
+              <textarea
+                v-model="reviewNote"
+                class="review-note"
+                :disabled="!track || reviewSaving"
+                maxlength="1000"
+                placeholder="可选留言"
+              />
+
+              <div class="review-actions">
+                <span class="review-status" :class="{ error: reviewError }">
+                  {{ reviewError || (reviewLoading ? '读取中…' : reviewSavedMessage) }}
+                </span>
+                <button
+                  v-if="trackReview"
+                  type="button"
+                  class="review-action ghost"
+                  :disabled="reviewSaving"
+                  @click="clearReview"
+                >
+                  清空
+                </button>
+                <button
+                  type="button"
+                  class="review-action primary"
+                  :disabled="!canSaveReview"
+                  @click="saveReview"
+                >
+                  {{ reviewSaving ? '保存中' : '保存' }}
+                </button>
+              </div>
+            </div>
           </template>
         </div>
       </div>
@@ -234,8 +318,17 @@ import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
-import { getTrackChapters, getTrackComments, getTrackIntro, getTrackSubtitles, mediaUrl } from '@/api/client'
-import type { PlayMode, Track, TrackChapters, TrackComments, TrackIntro, TrackSubtitles } from '@/types'
+import {
+  deleteTrackReview,
+  fetchTrackReview,
+  getTrackChapters,
+  getTrackComments,
+  getTrackIntro,
+  getTrackSubtitles,
+  mediaUrl,
+  saveTrackReview,
+} from '@/api/client'
+import type { PlayMode, Track, TrackChapters, TrackComments, TrackIntro, TrackReview, TrackSubtitles } from '@/types'
 import { formatCount } from '@/utils/format'
 import AppIcon from '@/components/base/AppIcon.vue'
 import LoadingDots from '@/components/base/LoadingDots.vue'
@@ -252,11 +345,15 @@ const track = computed<Track | null>(() => {
   if (currentTrack.value) return currentTrack.value
   if (videoInfo.value) {
     return {
+      trackId: videoInfo.value.trackId,
       bvid: videoInfo.value.bvid,
+      cid: videoInfo.value.cid,
       title: videoInfo.value.title,
       owner: videoInfo.value.owner,
       cover: videoInfo.value.cover,
       duration: videoInfo.value.duration,
+      playCount: videoInfo.value.playCount,
+      publishedAt: videoInfo.value.publishedAt,
     }
   }
   return null
@@ -280,13 +377,14 @@ const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
 const modeIcon = computed(() => MODE_META[player.playMode].icon)
 const modeLabel = computed(() => MODE_META[player.playMode].label)
 
-type TabKey = 'subtitle' | 'intro' | 'chapters' | 'comments'
+type TabKey = 'subtitle' | 'intro' | 'chapters' | 'comments' | 'review'
 const activeTab = ref<TabKey>('intro')
 const tabs: { key: TabKey; label: string }[] = [
   { key: 'subtitle', label: '字幕' },
   { key: 'intro', label: '简介' },
   { key: 'chapters', label: '章节' },
   { key: 'comments', label: '评论区' },
+  { key: 'review', label: '私人评价' },
 ]
 const playlistMenuOpen = ref(false)
 
@@ -306,11 +404,64 @@ const commentsHasMore = ref(false)
 const commentsMoreError = ref<string | null>(null)
 const commentsError = ref<string | null>(null)
 const infoPanelRef = ref<HTMLElement | null>(null)
+const trackReview = ref<TrackReview | null>(null)
+const reviewRating = ref(0)
+const reviewMood = ref('')
+const reviewNote = ref('')
+const reviewLoading = ref(false)
+const reviewSaving = ref(false)
+const reviewError = ref<string | null>(null)
+const reviewSavedMessage = ref('')
 
 const commentsPageSize = 20
 let commentsPage = 1
 
 let detailSeq = 0
+
+const reviewMoods = ['平静', '治愈', '怀旧', '兴奋', '难过', '专注', '浪漫', '压抑']
+const canSaveReview = computed(() => (
+  !!track.value &&
+  reviewRating.value >= 1 &&
+  reviewRating.value <= 5 &&
+  reviewMood.value.trim().length > 0 &&
+  !reviewLoading.value &&
+  !reviewSaving.value
+))
+const reviewUpdatedAt = computed(() => {
+  if (!trackReview.value?.updatedAt) return ''
+  return `更新于 ${formatReviewDate(trackReview.value.updatedAt)}`
+})
+
+const activeSubtitleLineIndex = computed(() => {
+  const lines = subtitles.value?.lines ?? []
+  return findActiveSubtitleLineIndex(lines, player.currentTime)
+})
+
+watch(activeSubtitleLineIndex, (index, previousIndex) => {
+  if (index < 0 || index === previousIndex || activeTab.value !== 'subtitle') return
+  requestAnimationFrame(() => {
+    const activeLine = infoPanelRef.value?.querySelector<HTMLElement>(`[data-subtitle-index="${index}"]`)
+    scrollSubtitleLineIntoPanel(activeLine)
+  })
+})
+
+function findActiveSubtitleLineIndex(lines: TrackSubtitles['lines'], currentTime: number): number {
+  let low = 0
+  let high = lines.length - 1
+  let candidate = -1
+
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    if (lines[middle].from <= currentTime) {
+      candidate = middle
+      low = middle + 1
+    } else {
+      high = middle - 1
+    }
+  }
+
+  return candidate >= 0 && currentTime < lines[candidate].to ? candidate : -1
+}
 
 watch(
   () => `${track.value?.bvid ?? ''}:${track.value?.cid ?? ''}`,
@@ -318,6 +469,7 @@ watch(
     detailSeq++
     resetDetailPanels()
     void loadActiveTab()
+    void loadTrackReview()
   },
   { immediate: true }
 )
@@ -346,6 +498,40 @@ function resetDetailPanels() {
   commentsMoreError.value = null
   commentsError.value = null
   commentsPage = 1
+  resetReviewForm()
+}
+
+function resetReviewForm() {
+  trackReview.value = null
+  reviewRating.value = 0
+  reviewMood.value = ''
+  reviewNote.value = ''
+  reviewLoading.value = false
+  reviewSaving.value = false
+  reviewError.value = null
+  reviewSavedMessage.value = ''
+}
+
+async function loadTrackReview() {
+  const current = track.value
+  if (!current?.bvid) return
+  const seq = detailSeq
+  reviewLoading.value = true
+  reviewError.value = null
+  try {
+    const review = await fetchTrackReview(current)
+    if (seq !== detailSeq) return
+    trackReview.value = review
+    reviewRating.value = review?.rating ?? 0
+    reviewMood.value = review?.mood ?? ''
+    reviewNote.value = review?.note ?? ''
+  } catch (error) {
+    if (seq === detailSeq) {
+      reviewError.value = error instanceof Error ? error.message : '评价读取失败'
+    }
+  } finally {
+    if (seq === detailSeq) reviewLoading.value = false
+  }
 }
 
 async function loadActiveTab() {
@@ -376,6 +562,9 @@ async function loadActiveTab() {
     subtitleError.value = null
     try {
       const data = await getTrackSubtitles(bvid, cid)
+      if (cid != null && data.cid !== cid) {
+        throw new Error('字幕分 P 与当前播放内容不一致')
+      }
       if (seq === detailSeq) subtitles.value = data
     } catch (error) {
       if (seq === detailSeq) subtitleError.value = error instanceof Error ? error.message : '字幕读取失败，点击重试'
@@ -495,11 +684,79 @@ function isNearBottom(panel: HTMLElement, threshold = 72): boolean {
   return panel.scrollTop + panel.clientHeight >= panel.scrollHeight - threshold
 }
 
+function scrollSubtitleLineIntoPanel(activeLine?: HTMLElement | null) {
+  const panel = infoPanelRef.value
+  if (!panel || !activeLine) return
+
+  const panelRect = panel.getBoundingClientRect()
+  const lineRect = activeLine.getBoundingClientRect()
+  const targetTop = panel.scrollTop + (lineRect.top - panelRect.top) - (panel.clientHeight - lineRect.height) / 2
+  const maxTop = Math.max(0, panel.scrollHeight - panel.clientHeight)
+  const nextTop = Math.min(Math.max(0, targetTop), maxTop)
+  panel.scrollTo({
+    top: nextTop,
+    behavior: reducedMotion.value ? 'auto' : 'smooth',
+  })
+}
+
 function formatTimeLabel(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+}
+
+function formatReviewDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
+}
+
+async function saveReview() {
+  if (!track.value || !canSaveReview.value) return
+  const current = track.value
+  const seq = detailSeq
+  reviewSaving.value = true
+  reviewError.value = null
+  reviewSavedMessage.value = ''
+  try {
+    const review = await saveTrackReview(current, reviewRating.value, reviewMood.value, reviewNote.value)
+    if (seq !== detailSeq) return
+    trackReview.value = review
+    reviewRating.value = review.rating
+    reviewMood.value = review.mood
+    reviewNote.value = review.note
+    reviewSavedMessage.value = '已保存'
+  } catch (error) {
+    if (seq === detailSeq) {
+      reviewError.value = error instanceof Error ? error.message : '评价保存失败'
+    }
+  } finally {
+    if (seq === detailSeq) reviewSaving.value = false
+  }
+}
+
+async function clearReview() {
+  if (!track.value) return
+  const current = track.value
+  const seq = detailSeq
+  reviewSaving.value = true
+  reviewError.value = null
+  try {
+    await deleteTrackReview(current)
+    if (seq !== detailSeq) return
+    trackReview.value = null
+    reviewRating.value = 0
+    reviewMood.value = ''
+    reviewNote.value = ''
+    reviewSavedMessage.value = '已清空'
+  } catch (error) {
+    if (seq === detailSeq) {
+      reviewError.value = error instanceof Error ? error.message : '评价清空失败'
+    }
+  } finally {
+    if (seq === detailSeq) reviewSaving.value = false
+  }
 }
 
 function toggleLike() {
@@ -584,7 +841,12 @@ function addCurrentToPlaylist(playlistId: string) {
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(rgba(10, 10, 14, 0.55), rgba(10, 10, 14, 0.72));
+  background: linear-gradient(
+    180deg,
+    rgba(10, 10, 14, 0.58) 0%,
+    rgba(10, 10, 14, 0.74) 58%,
+    rgba(10, 10, 14, 0.88) 100%
+  );
 }
 
 /* ===== 顶栏 ===== */
@@ -631,15 +893,17 @@ function addCurrentToPlaylist(playlistId: string) {
   z-index: 2;
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  justify-content: center;
   gap: 64px;
-  padding: 0 8%;
+  padding: 8px 8% 14px;
   min-height: 0;
 }
 
 /* 黑胶 */
 .disc-side {
   position: relative;
+  align-self: center;
   flex-shrink: 0;
   width: 380px;
   height: 380px;
@@ -749,11 +1013,16 @@ function addCurrentToPlaylist(playlistId: string) {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  height: min(620px, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+  align-self: center;
+  max-height: min(660px, 100%);
+  display: grid;
+  grid-template-rows: auto auto minmax(230px, 1fr);
+  gap: 14px;
   max-width: 560px;
+}
+
+.track-head {
+  min-width: 0;
 }
 
 .np-title {
@@ -896,10 +1165,9 @@ function addCurrentToPlaylist(playlistId: string) {
 }
 
 .info-panel {
-  flex: 1 1 0;
   overflow-y: auto;
   min-height: 0;
-  max-height: min(320px, 36vh);
+  max-height: none;
   padding-right: 6px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -970,6 +1238,11 @@ function addCurrentToPlaylist(playlistId: string) {
   font-size: 12px;
 }
 
+.subtitle-meta span.active {
+  background: rgba(251, 114, 153, 0.2);
+  color: #fff;
+}
+
 .intro-text,
 .dynamic-text {
   white-space: pre-wrap;
@@ -987,12 +1260,38 @@ function addCurrentToPlaylist(playlistId: string) {
   gap: 8px;
 }
 
-.subtitle-lines li,
+.subtitle-line-button,
 .chapter-item {
   display: grid;
   grid-template-columns: 54px 1fr;
   align-items: start;
   gap: 10px;
+}
+
+.subtitle-lines li {
+  border-left: 2px solid transparent;
+  border-radius: var(--radius-small);
+  scroll-margin-block: 72px;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.subtitle-lines li.active {
+  border-left-color: var(--color-primary);
+  background: rgba(251, 114, 153, 0.14);
+}
+
+.subtitle-line-button {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.subtitle-line-button:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .time-badge {
@@ -1121,14 +1420,175 @@ function addCurrentToPlaylist(playlistId: string) {
   background: rgba(251, 114, 153, 0.12);
 }
 
+.review-panel {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  padding: 2px 0 8px;
+}
+
+.review-head,
+.review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-head h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.review-head p {
+  margin-top: 3px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.review-private {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.review-stars,
+.review-moods {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-star {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.46);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+}
+
+.review-star:hover:not(:disabled),
+.review-star.active {
+  background: rgba(251, 114, 153, 0.18);
+  color: #ffcf5a;
+}
+
+.review-star:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.review-mood {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.review-mood:hover:not(:disabled),
+.review-mood.active {
+  border-color: rgba(251, 114, 153, 0.42);
+  background: rgba(251, 114, 153, 0.17);
+  color: #fff;
+}
+
+.review-note {
+  width: 100%;
+  min-height: 54px;
+  max-height: 96px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.review-note:focus {
+  border-color: rgba(251, 114, 153, 0.5);
+}
+
+.review-note::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.review-status {
+  min-width: 0;
+  flex: 1;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 12px;
+}
+
+.review-status.error {
+  color: var(--color-primary);
+}
+
+.review-action {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-small);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.review-action.ghost {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.review-action.primary {
+  border: 1px solid rgba(251, 114, 153, 0.55);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.review-action:hover:not(:disabled) {
+  border-color: rgba(251, 114, 153, 0.56);
+  background: rgba(251, 114, 153, 0.2);
+  color: #fff;
+}
+
+.review-action:disabled,
+.review-star:disabled,
+.review-mood:disabled,
+.review-note:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ===== 底部 ===== */
 .np-footer {
   position: relative;
   z-index: 2;
-  padding: 20px 8% 32px;
+  flex-shrink: 0;
+  padding: 12px 8% 20px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
 .np-progress {
@@ -1208,7 +1668,7 @@ function addCurrentToPlaylist(playlistId: string) {
     flex-direction: column;
     justify-content: center;
     gap: 32px;
-    padding: 0 24px;
+    padding: 0 24px 16px;
     overflow-y: auto;
   }
   .disc-side {
@@ -1221,7 +1681,10 @@ function addCurrentToPlaylist(playlistId: string) {
   }
   .info-side {
     width: 100%;
+    align-self: stretch;
     height: auto;
+    display: flex;
+    flex-direction: column;
     max-height: none;
   }
   .info-panel {

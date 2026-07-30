@@ -4,14 +4,19 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from database import DEFAULT_DB_PATH, get_connection, init_db
+from database import DEFAULT_DB_PATH, LEGACY_OWNER_USER_ID, get_connection, init_db
 from error_code import APIError
 from library_service import utc_now
 
 
 class AnalysisService:
-    def __init__(self, db_path: Optional[Path | str] = None):
+    def __init__(
+        self,
+        db_path: Optional[Path | str] = None,
+        user_id: str = LEGACY_OWNER_USER_ID,
+    ):
         self.db_path = db_path or DEFAULT_DB_PATH
+        self.user_id = user_id
         init_db(self.db_path)
 
     def record_event(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -34,11 +39,12 @@ class AnalysisService:
             cursor = conn.execute(
                 """
                 INSERT INTO analysis_events (
-                    event, track_id, session_id, payload_json, created_at
+                    user_id, event, track_id, session_id, payload_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    self.user_id,
                     event,
                     str(track_id) if track_id else None,
                     str(session_id) if session_id else None,

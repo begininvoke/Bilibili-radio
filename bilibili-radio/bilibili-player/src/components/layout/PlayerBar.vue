@@ -393,4 +393,29 @@ function toggleLike() {
 @media (prefers-reduced-motion: reduce) {
   .spin-slow { animation: none; }
 }
+
+@media (max-width: 720px) {
+  .player-bar {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0 10px;
+    gap: 0;
+  }
+
+  .player-left,
+  .player-right {
+    display: none;
+  }
+
+  .player-center {
+    min-width: 0;
+  }
+
+  .control-row {
+    gap: 10px;
+  }
+
+  .progress-row {
+    max-width: 390px;
+  }
+}
 </style>

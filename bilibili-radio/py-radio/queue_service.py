@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from database import DEFAULT_DB_PATH, get_connection, init_db
+from database import DEFAULT_DB_PATH, LEGACY_OWNER_USER_ID, get_connection, init_db
 from error_code import APIError
 from library_service import utc_now
 from models import Track
@@ -13,20 +13,30 @@ VALID_PLAY_MODES = {"order", "loop", "single", "shuffle"}
 
 
 class PlayerQueueService:
-    def __init__(self, db_path: Optional[Path | str] = None):
+    def __init__(
+        self,
+        db_path: Optional[Path | str] = None,
+        user_id: str = LEGACY_OWNER_USER_ID,
+    ):
         self.db_path = db_path or DEFAULT_DB_PATH
+        self.user_id = user_id
         init_db(self.db_path)
 
     def get_queue(self) -> dict[str, Any]:
         with get_connection(self.db_path) as conn:
-            state = conn.execute("SELECT * FROM player_queue_state WHERE id = 1").fetchone()
+            state = conn.execute(
+                "SELECT * FROM player_queue_state WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()
             rows = conn.execute(
                 """
                 SELECT t.*, qi.position, qi.added_at
                 FROM player_queue_items qi
                 JOIN tracks t ON t.track_id = qi.track_id
+                WHERE qi.user_id = ?
                 ORDER BY qi.position ASC
-                """
+                """,
+                (self.user_id,),
             ).fetchall()
 
         queue = [self._track_from_row(row).to_dict() for row in rows]
@@ -107,26 +117,31 @@ class PlayerQueueService:
                     ),
                 )
 
-            conn.execute("DELETE FROM player_queue_items")
+            conn.execute(
+                "DELETE FROM player_queue_items WHERE user_id = ?",
+                (self.user_id,),
+            )
             for position, track in enumerate(normalized):
                 conn.execute(
                     """
-                    INSERT INTO player_queue_items (position, track_id, added_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO player_queue_items (user_id, position, track_id, added_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (position, track.track_id, now),
+                    (self.user_id, position, track.track_id, now),
                 )
 
             conn.execute(
                 """
-                INSERT INTO player_queue_state (id, current_index, play_mode, updated_at)
-                VALUES (1, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
+                INSERT INTO player_queue_state (
+                    user_id, current_index, play_mode, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
                     current_index = excluded.current_index,
                     play_mode = excluded.play_mode,
                     updated_at = excluded.updated_at
                 """,
-                (current_index, play_mode, now),
+                (self.user_id, current_index, play_mode, now),
             )
 
         return self.get_queue()

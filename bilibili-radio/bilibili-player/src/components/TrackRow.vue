@@ -7,9 +7,16 @@
     >
       <div class="col-index">
         <PlayingBars v-if="isCurrent && isPlaying" />
-        <span v-else class="index-num">{{ index + 1 }}</span>
-        <button class="row-play" title="播放" @click.stop="handlePrimaryPlay">
-          <AppIcon name="play" :size="16" />
+        <span v-else-if="!isPreparingPlay" class="index-num">{{ index + 1 }}</span>
+        <button
+          class="row-play"
+          :class="{ preparing: isPreparingPlay }"
+          :title="isPreparingPlay ? '正在准备播放' : '播放'"
+          :disabled="isPreparingPlay"
+          @click.stop="handlePrimaryPlay"
+        >
+          <LoadingDots v-if="isPreparingPlay" />
+          <AppIcon v-else name="play" :size="16" />
         </button>
       </div>
 
@@ -19,7 +26,9 @@
         <div class="row-title" :class="{ 'is-current': isCurrent }" :title="track.title">
           {{ track.title }}
         </div>
-        <div class="row-owner">{{ track.owner }}</div>
+        <div class="row-owner" :class="{ preparing: isPreparingPlay }">
+          {{ isPreparingPlay ? '正在准备播放' : track.owner }}
+        </div>
       </div>
 
       <div class="col-duration">{{ formatDuration(track.duration) }}</div>
@@ -107,6 +116,7 @@ import { useLibraryStore } from '@/stores/libraryStore'
 import { usePlayerStore } from '@/stores/playerStore'
 import { formatDuration } from '@/utils/format'
 import AppIcon from '@/components/base/AppIcon.vue'
+import LoadingDots from '@/components/base/LoadingDots.vue'
 import PlayingBars from '@/components/base/PlayingBars.vue'
 
 const DETAIL_TIMEOUT_MS = 10000
@@ -134,23 +144,38 @@ const partsOpen = ref(false)
 const partsLoading = ref(false)
 const partsLoaded = ref(false)
 const partsError = ref<string | null>(null)
+const isPreparingPlay = ref(false)
 const loadedBvid = ref<string | null>(null)
 const playlistTarget = ref<Track | null>(null)
 
 let loadPromise: Promise<Track[]> | null = null
 
 const canLoadParts = computed(() => !!props.track.bvid)
+const knownPageCount = computed<number | null>(() => {
+  if (partsLoaded.value && loadedBvid.value === props.track.bvid) {
+    return parts.value.length
+  }
+  if (typeof props.track.pageCount === 'number' && Number.isFinite(props.track.pageCount) && props.track.pageCount > 0) {
+    return Math.trunc(props.track.pageCount)
+  }
+  if (props.track.isMultipart === true) return 2
+  if (props.track.isMultipart === false) return 1
+  return null
+})
+const isKnownMultipart = computed(() => (knownPageCount.value ?? 0) > 1)
+const isKnownSinglePart = computed(() => knownPageCount.value === 1)
 const showPartsPanel = computed(() => {
   return canLoadParts.value
-    && (partsOpen.value || partsLoading.value || !!partsError.value)
+    && partsOpen.value
     && (partsLoading.value || !!partsError.value || parts.value.length > 1)
 })
-const enqueueTitle = computed(() => props.track.cid == null ? '添加全部分 P 到队列' : '添加到队列')
+const enqueueTitle = computed(() => isKnownMultipart.value ? '添加全部分 P 到队列' : '添加到队列')
 
 function resetPartsIfTrackChanged() {
   if (loadedBvid.value === props.track.bvid) return
   loadedBvid.value = props.track.bvid
   parts.value = []
+  partsOpen.value = false
   partsLoaded.value = false
   partsLoading.value = false
   partsError.value = null
@@ -196,18 +221,33 @@ async function ensureParts(): Promise<Track[]> {
 }
 
 async function handlePrimaryPlay() {
-  if (props.track.cid != null) {
+  if (isPreparingPlay.value) return
+  resetPartsIfTrackChanged()
+  if (props.track.cid != null || isKnownSinglePart.value) {
     emit('play')
     return
   }
 
-  if (partsLoaded.value && parts.value.length > 1) {
-    partsOpen.value = !partsOpen.value
+  if (isKnownMultipart.value) {
+    if (partsLoaded.value && parts.value.length > 1) {
+      partsOpen.value = !partsOpen.value
+      return
+    }
+
+    partsOpen.value = true
+    const pageTracks = await ensureParts()
+    if (pageTracks.length === 1) {
+      partsOpen.value = false
+      player.playTrack(pageTracks[0])
+    }
     return
   }
 
-  partsOpen.value = true
-  const pageTracks = await ensureParts()
+  // Unknown page counts require one detail probe. Keep it invisible until multipart is confirmed.
+  isPreparingPlay.value = true
+  const pageTracks = await ensureParts().finally(() => {
+    isPreparingPlay.value = false
+  })
   if (pageTracks.length > 1) {
     partsOpen.value = true
     return
@@ -222,7 +262,8 @@ async function handlePrimaryPlay() {
 }
 
 async function handleEnqueue() {
-  if (props.track.cid != null) {
+  resetPartsIfTrackChanged()
+  if (props.track.cid != null || isKnownSinglePart.value) {
     emit('enqueue')
     return
   }
@@ -241,7 +282,8 @@ async function handleEnqueue() {
 }
 
 async function handlePlaylist() {
-  if (props.track.cid != null) {
+  resetPartsIfTrackChanged()
+  if (props.track.cid != null || isKnownSinglePart.value) {
     openPlaylistMenu(props.track)
     return
   }
@@ -299,6 +341,7 @@ function addTargetToPlaylist(playlistId: string) {
 }
 
 function normalizeParts(detailParts: Track[]): Track[] {
+  const pageCount = detailParts.length
   return detailParts
     .filter((part) => part.cid != null)
     .map((part) => ({
@@ -309,6 +352,8 @@ function normalizeParts(detailParts: Track[]): Track[] {
       playCount: part.playCount ?? props.track.playCount,
       publishedAt: part.publishedAt ?? props.track.publishedAt,
       source: part.source ?? props.track.source,
+      pageCount,
+      isMultipart: pageCount > 1,
     }))
 }
 
@@ -386,6 +431,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   cursor: pointer;
 }
 
+.row-play.preparing {
+  display: flex;
+  cursor: progress;
+}
+
 .track-row:hover .index-num {
   opacity: 0;
 }
@@ -427,6 +477,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.row-owner.preparing {
+  color: var(--color-primary);
 }
 
 .col-duration {

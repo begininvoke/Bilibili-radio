@@ -16,6 +16,7 @@
         :to="item.to"
         class="nav-item"
         :class="{ active: isActive(item.to) }"
+        @click="emit('navigate')"
       >
         <span class="indicator" />
         <AppIcon :name="item.icon" :size="18" />
@@ -25,12 +26,12 @@
 
     <div class="nav-section-title">我的音乐</div>
     <nav class="nav">
-      <RouterLink to="/likes" class="nav-item" :class="{ active: isActive('/likes') }">
+      <RouterLink to="/likes" class="nav-item" :class="{ active: isActive('/likes') }" @click="emit('navigate')">
         <span class="indicator" />
         <AppIcon name="heart" :size="18" />
         <span class="nav-label">我喜欢</span>
       </RouterLink>
-      <RouterLink to="/recent" class="nav-item" :class="{ active: isActive('/recent') }">
+      <RouterLink to="/recent" class="nav-item" :class="{ active: isActive('/recent') }" @click="emit('navigate')">
         <span class="indicator" />
         <AppIcon name="clock" :size="18" />
         <span class="nav-label">最近播放</span>
@@ -50,12 +51,21 @@
         :to="`/playlist/${playlist.id}`"
         class="nav-item"
         :class="{ active: isActive(`/playlist/${playlist.id}`) }"
+        @click="emit('navigate')"
       >
         <span class="indicator" />
         <AppIcon name="list" :size="18" />
         <span class="nav-label">{{ playlist.name }}</span>
       </RouterLink>
       <p v-if="library.playlists.length === 0" class="no-playlist">还没有歌单，点上方 + 新建</p>
+    </nav>
+
+    <nav v-if="auth.isAdmin" class="nav admin-nav">
+      <RouterLink to="/admin" class="nav-item" :class="{ active: isActive('/admin') }" @click="emit('navigate')">
+        <span class="indicator" />
+        <AppIcon name="shield" :size="18" />
+        <span class="nav-label">管理控制台</span>
+      </RouterLink>
     </nav>
   </aside>
 
@@ -93,11 +103,14 @@
 import { nextTick, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useLibraryStore } from '@/stores/libraryStore'
+import { useAuthStore } from '@/stores/authStore'
 import AppIcon from '@/components/base/AppIcon.vue'
 import iconUrl from '@/assets/icon.png'
 
 const route = useRoute()
 const library = useLibraryStore()
+const auth = useAuthStore()
+const emit = defineEmits<{ navigate: [] }>()
 
 const playlistDialogOpen = ref(false)
 const playlistName = ref('我的歌单')
@@ -275,6 +288,11 @@ function confirmCreatePlaylist() {
 
 .playlists {
   flex: 1;
+}
+
+.admin-nav {
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
 }
 
 .no-playlist {

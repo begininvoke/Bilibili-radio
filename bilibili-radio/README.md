@@ -4,6 +4,8 @@
 
 一个基于 Vue 3 + Flask 的 B站视频后台播放器，支持音频流实时播放。
 
+> 当前生产部署已经接入 OIDC、按用户隔离的 B 站凭据与曲库、管理员控制台及 Prometheus/Grafana 监控。完整配置和迁移说明见 [`doc/oidc-admin-monitoring-implementation-2026-07-21.md`](doc/oidc-admin-monitoring-implementation-2026-07-21.md)。本地开发仍可使用无感单用户模式，但只监听 `127.0.0.1`。
+
 ## 系统架构
 
 

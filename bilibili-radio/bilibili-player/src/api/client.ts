@@ -1,4 +1,8 @@
 import type {
+  AdminStatsSummary,
+  AdminRoleToggleResult,
+  AdminUsersPage,
+  AppSession,
   AudioStreamInfo,
   AuthQrCode,
   AuthQrStatus,
@@ -11,10 +15,12 @@ import type {
   TrackComments,
   TrackCoverInfo,
   TrackIntro,
+  TrackReview,
   TrackSubtitles,
 } from '@/types'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+let csrfToken: string | null = null
 
 interface ApiResponse<T> {
   success: boolean
@@ -49,6 +55,10 @@ export interface TrackStreamInfo extends AudioStreamInfo {
 
 export interface TrackListResult {
   tracks: Track[]
+}
+
+export interface TrackReviewResult {
+  review: TrackReview | null
 }
 
 export interface PlaylistListResult {
@@ -89,6 +99,15 @@ export interface FavoriteImportResult {
     pageSize: number
     maxPages: number
   }
+}
+
+export function setApiCsrfToken(token: string | null | undefined): void {
+  csrfToken = token || null
+}
+
+export function redirectToOidcLogin(next = currentAppLocation()): void {
+  const params = new URLSearchParams({ next })
+  window.location.assign(apiUrl(`/api/session/login?${params.toString()}`))
 }
 
 export function apiUrl(path: string): string {
@@ -176,10 +195,16 @@ export async function getTrackStreamInfo(
 ): Promise<TrackStreamInfo> {
   const params = new URLSearchParams({ quality })
   const safeBvid = encodeURIComponent(bvid)
-  if (cid != null) {
-    return apiRequest<TrackStreamInfo>(`/api/tracks/${safeBvid}/${cid}/stream-info?${params.toString()}`)
+  const path = cid != null
+    ? `/api/tracks/${safeBvid}/${cid}/stream-info?${params.toString()}`
+    : `/api/tracks/${safeBvid}/stream-info?${params.toString()}`
+  const streamInfo = await apiRequest<TrackStreamInfo>(path)
+  const relativeUrl = streamInfo.relativeUrl?.trim()
+
+  if (relativeUrl?.startsWith('/') && !relativeUrl.startsWith('//')) {
+    return { ...streamInfo, url: apiUrl(relativeUrl) }
   }
-  return apiRequest<TrackStreamInfo>(`/api/tracks/${safeBvid}/stream-info?${params.toString()}`)
+  return streamInfo
 }
 
 export async function resetStreamStats(): Promise<void> {
@@ -246,6 +271,28 @@ export async function removeLikeTrack(track: Track): Promise<void> {
   })
 }
 
+export async function fetchTrackReview(track: Track): Promise<TrackReview | null> {
+  const data = await apiRequest<TrackReviewResult>(trackScopedPath(track.bvid, track.cid, 'library-review'))
+  return data.review
+}
+
+export async function saveTrackReview(
+  track: Track,
+  rating: number,
+  mood: string,
+  note = ''
+): Promise<TrackReview> {
+  return apiRequest<TrackReview>(trackScopedPath(track.bvid, track.cid, 'library-review'), {
+    method: 'PUT',
+    body: JSON.stringify({ track, rating, mood, note }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+export async function deleteTrackReview(track: Track): Promise<void> {
+  await apiRequest(trackScopedPath(track.bvid, track.cid, 'library-review'), { method: 'DELETE' })
+}
+
 export async function fetchPlaylists(): Promise<Playlist[]> {
   const data = await apiRequest<PlaylistListResult>('/api/library/playlists')
   return data.playlists
@@ -272,17 +319,46 @@ export async function addPlaylistItemsRemote(id: string, tracks: Track[]): Promi
 }
 
 export async function fetchAuthStatus(refresh = false): Promise<AuthStatus> {
-  const params = new URLSearchParams({ refresh: String(refresh) })
-  return apiRequest<AuthStatus>(`/api/auth/status?${params.toString()}`)
+  return refresh
+    ? apiRequest<AuthStatus>('/api/auth/status/refresh', { method: 'POST' })
+    : apiRequest<AuthStatus>('/api/auth/status')
+}
+
+export async function fetchAppSession(): Promise<AppSession> {
+  return apiRequest<AppSession>('/api/session/me', undefined, { redirectOnUnauthorized: false })
+}
+
+export async function logoutAppSession(): Promise<void> {
+  await apiRequest('/api/session/logout', { method: 'POST' })
+}
+
+export async function fetchAdminStatsSummary(range = '7d'): Promise<AdminStatsSummary> {
+  const params = new URLSearchParams({ range })
+  return apiRequest<AdminStatsSummary>(`/api/admin/stats/summary?${params.toString()}`)
+}
+
+export async function fetchAdminUsers(page = 1, pageSize = 20): Promise<AdminUsersPage> {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  })
+  return apiRequest<AdminUsersPage>(`/api/admin/users?${params.toString()}`)
+}
+
+export async function toggleGenshinRole(): Promise<AdminRoleToggleResult> {
+  return apiRequest<AdminRoleToggleResult>('/api/admin/genshin', { method: 'POST' })
 }
 
 export async function createBiliLoginQr(): Promise<AuthQrCode> {
-  return apiRequest<AuthQrCode>('/api/auth/qrcode')
+  return apiRequest<AuthQrCode>('/api/auth/qrcode', { method: 'POST' })
 }
 
 export async function pollBiliLoginQr(qrcodeKey: string): Promise<AuthQrStatus> {
-  const params = new URLSearchParams({ qrcodeKey })
-  return apiRequest<AuthQrStatus>(`/api/auth/qrcode/status?${params.toString()}`)
+  return apiRequest<AuthQrStatus>('/api/auth/qrcode/status', {
+    method: 'POST',
+    body: JSON.stringify({ qrcodeKey }),
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
 export async function logoutBili(): Promise<void> {
@@ -345,24 +421,53 @@ export async function recordAnalysisEvent(event: string, payload: Record<string,
 
 function trackScopedPath(bvid: string, cid: number | null | undefined, suffix: string): string {
   const safeBvid = encodeURIComponent(bvid)
+  if (suffix === 'library-review') {
+    return cid != null
+      ? `/api/library/reviews/${safeBvid}/${cid}`
+      : `/api/library/reviews/${safeBvid}`
+  }
   if (cid != null) {
     return `/api/tracks/${safeBvid}/${cid}/${suffix}`
   }
   return `/api/tracks/${safeBvid}/${suffix}`
 }
 
-async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+interface ApiRequestOptions {
+  redirectOnUnauthorized?: boolean
+}
+
+function currentAppLocation(): string {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}` || '/'
+}
+
+function isMutation(method?: string): boolean {
+  const normalized = (method || 'GET').toUpperCase()
+  return !['GET', 'HEAD', 'OPTIONS'].includes(normalized)
+}
+
+async function apiRequest<T>(
+  path: string,
+  init?: RequestInit,
+  options: ApiRequestOptions = {}
+): Promise<T> {
+  const headers = new Headers(init?.headers)
+  headers.set('Accept', 'application/json')
+  if (csrfToken && isMutation(init?.method)) {
+    headers.set('X-CSRF-Token', csrfToken)
+  }
+
   const response = await fetch(apiUrl(path), {
     ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.headers ?? {}),
-    },
+    credentials: 'include',
+    headers,
   })
 
   const payload = (await response.json().catch(() => null)) as ApiResponse<T> | null
   if (!response.ok || !payload?.success) {
     const error = payload?.error
+    if (response.status === 401 && options.redirectOnUnauthorized !== false) {
+      redirectToOidcLogin()
+    }
     throw new ApiError(
       error?.message || `Request failed with status ${response.status}`,
       error?.code,

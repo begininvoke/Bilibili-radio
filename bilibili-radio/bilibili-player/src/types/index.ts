@@ -41,6 +41,8 @@ export interface Track {
   publishedAt?: string | null
   page?: number | null
   pageTitle?: string | null
+  pageCount?: number | null
+  isMultipart?: boolean | null
   source?: string
 }
 
@@ -50,6 +52,22 @@ export interface BiliUserProfile {
   face: string
   level?: number
   vipType?: number
+}
+
+export type AppUserRole = 'user' | 'admin'
+
+export interface AppUser {
+  id: string
+  displayName: string
+  role: AppUserRole
+}
+
+export interface AppSession {
+  authenticated: boolean
+  user: AppUser | null
+  csrfToken: string | null
+  oidcEnabled: boolean
+  biliConnected: boolean
 }
 
 export interface AuthStatus {
@@ -73,6 +91,50 @@ export interface AuthQrStatus {
   message: string
   isLoggedIn: boolean
   user: BiliUserProfile | null
+}
+
+export interface AdminStatsSummary {
+  range: string
+  generatedAt: string
+  monitoringUrl?: string | null
+  users: {
+    total: number
+    active: number
+    newUsers: number
+    admins: number
+  }
+  traffic: {
+    requests: number | null
+    errorRate: number | null
+    p95LatencyMs: number | null
+  }
+  playback: {
+    plays: number
+    skips: number
+    listenSeconds: number
+  }
+}
+
+export interface AdminUser {
+  id: string
+  displayName: string
+  email?: string | null
+  role: AppUserRole
+  status: 'active' | 'disabled'
+  createdAt: string
+  lastLoginAt?: string | null
+}
+
+export interface AdminUsersPage {
+  items: AdminUser[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface AdminRoleToggleResult {
+  id: string
+  role: AppUserRole
 }
 
 export interface FavoriteFolder {
@@ -197,6 +259,18 @@ export interface TrackComments {
   total: number
   hasMore: boolean
   comments: TrackComment[]
+}
+
+export interface TrackReview {
+  trackId: string
+  bvid: string
+  cid?: number | null
+  rating: number
+  mood: string
+  note: string
+  visibility: 'private'
+  createdAt: string
+  updatedAt: string
 }
 
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'

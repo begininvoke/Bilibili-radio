@@ -20,26 +20,23 @@
         </div>
       </div>
 
-      <div v-if="auth.user" class="user-line">
-        <img v-if="auth.user.face" :src="mediaUrl(auth.user.face)" :alt="auth.user.name" />
-        <span>{{ auth.user.name }}</span>
+      <div v-if="auth.biliUser" class="user-line">
+        <img v-if="auth.biliUser.face" :src="mediaUrl(auth.biliUser.face)" :alt="auth.biliUser.name" />
+        <span>{{ auth.biliUser.name }}</span>
       </div>
 
-      <p v-if="auth.errorMessage" class="error-text">{{ auth.errorMessage }}</p>
+      <p v-if="auth.biliError" class="error-text">{{ auth.biliError }}</p>
 
       <div class="actions">
         <button class="primary-btn" :disabled="auth.isQrLoading" @click="refreshQr">
           <AppIcon name="repeat" :size="16" />
           <span>刷新二维码</span>
         </button>
-        <button v-if="auth.isLoggedIn" class="ghost-btn" @click="enterApp">
+        <button v-if="auth.biliConnected" class="ghost-btn" @click="enterApp">
           <AppIcon name="play" :size="14" />
           <span>进入应用</span>
         </button>
-        <button v-if="!auth.loginRequired" class="ghost-btn" @click="enterApp">
-          <span>开发环境跳过</span>
-        </button>
-        <button v-if="auth.isLoggedIn" class="text-btn" @click="logout">
+        <button v-if="auth.biliConnected" class="text-btn" @click="logout">
           退出登录
         </button>
       </div>
@@ -66,11 +63,11 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const redirectTarget = computed(() => {
   const redirect = route.query.redirect
-  return typeof redirect === 'string' && redirect.startsWith('/') ? redirect : '/'
+  return typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/'
 })
 
 const statusText = computed(() => {
-  if (auth.isLoggedIn) return '已登录'
+  if (auth.biliConnected) return '已登录'
   if (auth.isQrLoading) return '正在生成二维码'
   if (!auth.qrStatus) return '请使用哔哩哔哩客户端扫码'
   if (auth.qrStatus.status === 'scanned') return '已扫码，请在手机上确认'
@@ -80,15 +77,15 @@ const statusText = computed(() => {
 })
 
 const statusClass = computed(() => {
-  if (auth.isLoggedIn) return 'ok'
-  if (auth.qrStatus?.status === 'expired' || auth.errorMessage) return 'error'
+  if (auth.biliConnected) return 'ok'
+  if (auth.qrStatus?.status === 'expired' || auth.biliError) return 'error'
   if (auth.qrStatus?.status === 'scanned') return 'pending'
   return ''
 })
 
 onMounted(async () => {
-  await auth.initialize(true)
-  if (!auth.isLoggedIn) {
+  await auth.initializeBili(true)
+  if (!auth.biliConnected) {
     await refreshQr()
   }
 })
@@ -129,7 +126,7 @@ function enterApp() {
 
 async function logout() {
   stopPolling()
-  await auth.logout()
+  await auth.disconnectBili()
   await refreshQr()
 }
 

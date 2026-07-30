@@ -16,6 +16,7 @@ class ErrorCode(Enum):
     NOT_FOUND = 1006
     CONFLICT = 1007
     AUTH_REQUIRED = 1008
+    FORBIDDEN = 1009
 
     NETWORK_ERROR = 2001
     REQUEST_TIMEOUT = 2002
@@ -35,6 +36,7 @@ class ErrorMessage:
     NOT_FOUND = "Resource not found"
     CONFLICT = "Resource conflict"
     AUTH_REQUIRED = "Authentication required"
+    FORBIDDEN = "Permission denied"
 
     NETWORK_ERROR = "Network request failed"
     REQUEST_TIMEOUT = "Request timeout"
@@ -64,6 +66,7 @@ class APIError(Exception):
             ErrorCode.NOT_FOUND: ErrorMessage.NOT_FOUND,
             ErrorCode.CONFLICT: ErrorMessage.CONFLICT,
             ErrorCode.AUTH_REQUIRED: ErrorMessage.AUTH_REQUIRED,
+            ErrorCode.FORBIDDEN: ErrorMessage.FORBIDDEN,
             ErrorCode.NETWORK_ERROR: ErrorMessage.NETWORK_ERROR,
             ErrorCode.REQUEST_TIMEOUT: ErrorMessage.REQUEST_TIMEOUT,
             ErrorCode.API_ERROR: ErrorMessage.API_ERROR,
@@ -101,6 +104,10 @@ class APIError(Exception):
     @classmethod
     def auth_required(cls, detail: Optional[str] = None) -> "APIError":
         return cls(ErrorCode.AUTH_REQUIRED, detail or ErrorMessage.AUTH_REQUIRED, 401)
+
+    @classmethod
+    def forbidden(cls, detail: Optional[str] = None) -> "APIError":
+        return cls(ErrorCode.FORBIDDEN, detail or ErrorMessage.FORBIDDEN, 403)
 
     @classmethod
     def network_error(cls, detail: Optional[str] = None) -> "APIError":

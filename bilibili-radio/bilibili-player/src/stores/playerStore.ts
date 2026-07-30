@@ -5,33 +5,18 @@ import type {
   PlayerStatus,
   PlayMode,
   Track,
-  DownloadProgress,
-  PlaybackProgress,
-  AudioStreamInfo,
   PlayerQueueSnapshot,
 } from '@/types'
 import {
   apiUrl,
   fetchPlayerQueue,
-  getTrackDetail,
   getTrackCoverInfo,
   getTrackStreamInfo,
-  resetStreamStats,
   resolveTrackInput,
   savePlayerQueue,
 } from '@/api/client'
-import { wsClient } from '@/audio/WsClient'
 import { streamingAudioPlayer } from '@/audio/StreamingAudioPlayer'
 import { useLibraryStore } from '@/stores/libraryStore'
-
-interface StreamStats {
-  total_bytes: number
-  session_bytes: number
-  elapsed_seconds: number
-  bytes_per_second: number
-  total_mb: number
-  session_mb: number
-}
 
 const PLAY_MODES: PlayMode[] = ['order', 'loop', 'single', 'shuffle']
 const QUEUE_STORAGE_KEY = 'bili-radio:player-queue'
@@ -82,10 +67,7 @@ export const usePlayerStore = defineStore('player', () => {
   const videoInfo = ref<VideoInfo | null>(null)
   const errorMessage = ref<string | null>(null)
   const statusMessage = ref<string>('')
-  const downloadProgress = ref<DownloadProgress | null>(null)
-  const isConnected = ref(false)
   const isInitialized = ref(false)
-  const streamStats = ref<StreamStats | null>(null)
   const isDownloading = ref(false)
 
   // 播放队列
@@ -95,8 +77,8 @@ export const usePlayerStore = defineStore('player', () => {
   const queueBackendAvailable = ref(false)
   const queueSyncError = ref<string | null>(null)
 
-  let statsInterval: ReturnType<typeof setInterval> | null = null
   let playSeq = 0
+  let initializePromise: Promise<void> | null = null
   let queueSaveTimer: ReturnType<typeof setTimeout> | null = null
   let queueRestored = false
   let suppressQueueRemoteSync = false
@@ -117,14 +99,6 @@ export const usePlayerStore = defineStore('player', () => {
   const isLoading = computed(() => status.value === 'loading')
   const hasError = computed(() => status.value === 'error')
   const hasTrack = computed(() => currentTrack.value !== null || videoInfo.value !== null)
-  const formattedStreamStats = computed(() => {
-    if (!streamStats.value) return null
-    return {
-      sessionMB: streamStats.value.session_mb.toFixed(2),
-      totalMB: streamStats.value.total_mb.toFixed(2),
-      speed: formatSpeed(streamStats.value.bytes_per_second),
-    }
-  })
 
   watch(
     [queue, currentIndex, playMode],
@@ -233,16 +207,6 @@ export const usePlayerStore = defineStore('player', () => {
     duration.value = track.duration
   }
 
-  function formatSpeed(bytesPerSecond: number): string {
-    if (bytesPerSecond < 1024) {
-      return `${bytesPerSecond.toFixed(0)} B/s`
-    } else if (bytesPerSecond < 1024 * 1024) {
-      return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`
-    } else {
-      return `${(bytesPerSecond / (1024 * 1024)).toFixed(2)} MB/s`
-    }
-  }
-
   function formatTime(seconds: number): string {
     if (!Number.isFinite(seconds) || seconds < 0) seconds = 0
     const mins = Math.floor(seconds / 60)
@@ -250,33 +214,17 @@ export const usePlayerStore = defineStore('player', () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
 
-  async function fetchStreamStats() {
-    try {
-      const response = await fetch(apiUrl('/api/stream/stats'))
-      const data = await response.json()
-      if (data.success) {
-        streamStats.value = data.data
-      }
-    } catch (error) {
-      console.error('Failed to fetch stream stats:', error)
-    }
+  function initialize(): Promise<void> {
+    if (isInitialized.value) return Promise.resolve()
+    if (initializePromise) return initializePromise
+
+    initializePromise = initializePlayer().finally(() => {
+      initializePromise = null
+    })
+    return initializePromise
   }
 
-  function startStatsPolling() {
-    if (statsInterval) {
-      clearInterval(statsInterval)
-    }
-    statsInterval = setInterval(fetchStreamStats, 1000)
-  }
-
-  function stopStatsPolling() {
-    if (statsInterval) {
-      clearInterval(statsInterval)
-      statsInterval = null
-    }
-  }
-
-  async function initialize() {
+  async function initializePlayer() {
     await restorePersistedQueue()
     if (isInitialized.value) return
 
@@ -289,7 +237,6 @@ export const usePlayerStore = defineStore('player', () => {
     streamingAudioPlayer.onStateChange((playing) => {
       if (playing) {
         status.value = 'playing'
-        startStatsPolling()
       } else {
         if (status.value === 'playing') {
           status.value = 'paused'
@@ -318,59 +265,6 @@ export const usePlayerStore = defineStore('player', () => {
 
     streamingAudioPlayer.setVolume(volume.value)
 
-    wsClient.setCallbacks({
-      onVideoInfo: (info: VideoInfo) => {
-        videoInfo.value = info
-        duration.value = info.duration
-        status.value = 'loading'
-        statusMessage.value = '正在加载音频...'
-        syncCurrentTrackFromInfo(info)
-      },
-      onAudioStream: (streamInfo: AudioStreamInfo) => {
-        streamingAudioPlayer.loadStream(streamInfo)
-      },
-      onDownloadProgress: (progress: DownloadProgress) => {
-        downloadProgress.value = progress
-      },
-      onPlaybackProgress: (progress: PlaybackProgress) => {
-        currentTime.value = progress.current_time
-        bufferLevel.value = progress.buffer_level
-
-        if (progress.error) {
-          setError(progress.error)
-        }
-      },
-      onStatus: (message: string) => {
-        statusMessage.value = message
-      },
-      onError: (message: string) => {
-        setError(message)
-      },
-      onProducerState: (state: string) => {
-        console.log('Producer state:', state)
-      },
-      onConsumerState: (state: string) => {
-        console.log('Consumer state:', state)
-        if (state === 'playing') {
-          status.value = 'playing'
-        } else if (state === 'paused') {
-          status.value = 'paused'
-        } else if (state === 'stopped') {
-          status.value = 'idle'
-          currentTime.value = 0
-        } else if (state === 'error') {
-          status.value = 'error'
-        }
-      },
-    })
-
-    const connected = await wsClient.connect()
-    isConnected.value = connected
-
-    if (!connected) {
-      console.warn('Socket.IO is unavailable; HTTP playback remains enabled')
-    }
-
     isInitialized.value = true
   }
 
@@ -383,31 +277,6 @@ export const usePlayerStore = defineStore('player', () => {
     errorMessage.value = null
   }
 
-  /** 用服务端返回的视频信息补全队列中当前曲目缺失的字段（封面 / UP主 / 时长） */
-  function syncCurrentTrackFromInfo(info: VideoInfo) {
-    const library = useLibraryStore()
-    const track: Track = {
-      trackId: info.trackId,
-      bvid: info.bvid,
-      cid: info.cid,
-      title: info.title,
-      owner: info.owner,
-      cover: info.cover,
-      duration: info.duration,
-      playCount: info.playCount,
-      publishedAt: info.publishedAt,
-    }
-    const idx = findTrackIndex(track)
-    if (idx >= 0) {
-      queue.value[idx] = { ...queue.value[idx], ...track }
-      currentIndex.value = idx
-    } else {
-      queue.value.push(track)
-      currentIndex.value = queue.value.length - 1
-    }
-    library.addRecent(track)
-  }
-
   async function requestPlayTrack(track: Track) {
     const seq = ++playSeq
     clearError()
@@ -416,28 +285,33 @@ export const usePlayerStore = defineStore('player', () => {
     currentTime.value = 0
     streamingAudioPlayer.stop()
 
-    if (!isInitialized.value) {
-      await initialize()
-    }
+    await initialize()
+    if (!isInitialized.value || seq !== playSeq) return
 
     try {
-      const playableTrack = await resolvePlayableTrack(track)
+      syncQueueCurrentTrack(track)
+      videoInfo.value = trackToVideoInfo(track)
+      duration.value = track.duration
+      statusMessage.value = '正在解析音频流...'
+
+      const streamInfo = await getTrackStreamInfo(track.bvid, track.cid)
       if (seq !== playSeq) return
 
+      const resolvedCid = streamInfo.cid ?? track.cid
+      const playableTrack: Track = {
+        ...track,
+        trackId: resolvedCid !== track.cid ? undefined : track.trackId,
+        cid: resolvedCid,
+        duration: streamInfo.duration || track.duration,
+      }
       syncQueueCurrentTrack(playableTrack)
       videoInfo.value = trackToVideoInfo(playableTrack)
       duration.value = playableTrack.duration
-      statusMessage.value = '正在解析音频流...'
-
-      await resetStreamStats().catch((error) => {
-        console.warn('Failed to reset stream stats:', error)
-      })
-      const streamInfo = await getTrackStreamInfo(playableTrack.bvid, playableTrack.cid)
-      if (seq !== playSeq) return
 
       statusMessage.value = '正在缓冲音频...'
       streamingAudioPlayer.loadStream(streamInfo)
       useLibraryStore().addRecent(playableTrack)
+      hydrateTrackCoverInBackground(playableTrack, seq)
     } catch (error) {
       if (seq !== playSeq) return
       setError(error instanceof Error ? error.message : '播放失败')
@@ -630,15 +504,12 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function stop() {
-    wsClient.stop()
+    playSeq++
     streamingAudioPlayer.stop()
-    stopStatsPolling()
-    streamStats.value = null
     status.value = 'idle'
     currentTime.value = 0
     videoInfo.value = null
     duration.value = 0
-    downloadProgress.value = null
     statusMessage.value = ''
   }
 
@@ -678,8 +549,7 @@ export const usePlayerStore = defineStore('player', () => {
     isDownloading.value = true
     statusMessage.value = '正在下载音频...'
     try {
-      const playableTrack = await resolvePlayableTrack(fallbackTrack)
-      const streamInfo = await getTrackStreamInfo(playableTrack.bvid, playableTrack.cid)
+      const streamInfo = await getTrackStreamInfo(fallbackTrack.bvid, fallbackTrack.cid)
       const response = await fetch(apiUrl(streamInfo.url))
       if (!response.ok) {
         throw new Error(`下载失败（${response.status}）`)
@@ -696,7 +566,7 @@ export const usePlayerStore = defineStore('player', () => {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${sanitizeFilename(playableTrack.title)}.${ext}`
+      a.download = `${sanitizeFilename(fallbackTrack.title)}.${ext}`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -707,13 +577,6 @@ export const usePlayerStore = defineStore('player', () => {
     } finally {
       isDownloading.value = false
     }
-  }
-
-  async function resolvePlayableTrack(track: Track): Promise<Track> {
-    if (track.cid != null) return hydrateTrackCover(track)
-    const detail = await getTrackDetail(track.bvid)
-    const page = detail.pages[0] ?? detail.track
-    return hydrateTrackCover({ ...track, ...page })
   }
 
   async function hydrateTrackCover(track: Track): Promise<Track> {
@@ -728,6 +591,19 @@ export const usePlayerStore = defineStore('player', () => {
       console.warn('Failed to hydrate track cover:', error)
       return track
     }
+  }
+
+  function hydrateTrackCoverInBackground(track: Track, seq: number) {
+    void hydrateTrackCover(track).then((hydratedTrack) => {
+      if (seq !== playSeq) return
+      const activeTrack = currentTrack.value
+      if (!activeTrack || !isSameTrack(activeTrack, track)) return
+      if (hydratedTrack.cover === activeTrack.cover) return
+
+      const updatedTrack = { ...activeTrack, ...hydratedTrack }
+      queue.value[currentIndex.value] = updatedTrack
+      videoInfo.value = trackToVideoInfo(updatedTrack)
+    })
   }
 
   function syncQueueCurrentTrack(track: Track) {
@@ -780,10 +656,9 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function disconnect() {
-    wsClient.disconnect()
+    playSeq++
     streamingAudioPlayer.destroy()
     isInitialized.value = false
-    isConnected.value = false
     status.value = 'idle'
   }
 
@@ -797,10 +672,7 @@ export const usePlayerStore = defineStore('player', () => {
     videoInfo,
     errorMessage,
     statusMessage,
-    downloadProgress,
-    isConnected,
     isInitialized,
-    streamStats,
     queue,
     currentIndex,
     playMode,
@@ -816,7 +688,6 @@ export const usePlayerStore = defineStore('player', () => {
     isLoading,
     hasError,
     hasTrack,
-    formattedStreamStats,
     initialize,
     playInput,
     playTrack,

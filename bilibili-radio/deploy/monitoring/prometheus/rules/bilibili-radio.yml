@@ -1,0 +1,92 @@
+groups:
+  - name: bilibili-radio-availability
+    rules:
+      - alert: BilibiliRadioBackendDown
+        expr: up{job="bilibili-radio-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Bilibili Radio backend is unavailable
+          description: Prometheus has failed to scrape the backend for more than two minutes.
+
+      - alert: BilibiliRadioHighServerErrorRate
+        expr: |
+          (
+            sum(rate(bilibili_radio_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(bilibili_radio_http_requests_total[5m])), 0.001)
+          ) > 0.05
+          and sum(rate(bilibili_radio_http_requests_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backend 5xx rate is above 5 percent
+          description: The rolling five-minute 5xx ratio has stayed above 5 percent for ten minutes.
+
+      - alert: BilibiliRadioHighRequestLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(bilibili_radio_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+          and sum(rate(bilibili_radio_http_requests_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backend p95 latency is above two seconds
+          description: Header production latency has stayed above two seconds at p95 for ten minutes.
+
+      - alert: BilibiliRadioUpstreamFailureRateHigh
+        expr: |
+          (
+            sum(rate(bilibili_radio_bilibili_upstream_requests_total{outcome!="success"}[10m]))
+            /
+            clamp_min(sum(rate(bilibili_radio_bilibili_upstream_requests_total[10m])), 0.001)
+          ) > 0.2
+          and sum(rate(bilibili_radio_bilibili_upstream_requests_total[10m])) > 0.02
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bilibili upstream failure rate is above 20 percent
+          description: Bilibili calls have failed at a sustained high rate; inspect outcome and operation labels.
+
+      - alert: BilibiliRadioSQLiteBusy
+        expr: sum(increase(bilibili_radio_database_operations_total{outcome="busy"}[10m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: SQLite is repeatedly busy
+          description: More than five SQLite busy outcomes were observed in a ten-minute window.
+
+      - alert: BilibiliRadioPossibleStreamLeak
+        expr: bilibili_radio_active_audio_streams > 32
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Unusually many audio streams remain open
+          description: More than 32 audio streams have remained open for at least fifteen minutes.
+
+  - name: bilibili-radio-recording
+    interval: 30s
+    rules:
+      - record: bilibili_radio:http_request_rate5m
+        expr: sum(rate(bilibili_radio_http_requests_total[5m]))
+
+      - record: bilibili_radio:http_error_ratio5m
+        expr: |
+          sum(rate(bilibili_radio_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(bilibili_radio_http_requests_total[5m])), 0.001)
+
+      - record: bilibili_radio:http_latency_p95_seconds5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(bilibili_radio_http_request_duration_seconds_bucket[5m]))
+          )

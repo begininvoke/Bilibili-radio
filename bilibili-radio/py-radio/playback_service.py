@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from database import DEFAULT_DB_PATH, get_connection, init_db
+from database import DEFAULT_DB_PATH, LEGACY_OWNER_USER_ID, get_connection, init_db
 from error_code import APIError
 from library_service import LibraryService, utc_now
 
@@ -13,10 +13,15 @@ COMPLETE_REMAINING_MS = 30_000
 
 
 class PlaybackService:
-    def __init__(self, db_path: Optional[Path | str] = None):
+    def __init__(
+        self,
+        db_path: Optional[Path | str] = None,
+        user_id: str = LEGACY_OWNER_USER_ID,
+    ):
         self.db_path = db_path or DEFAULT_DB_PATH
+        self.user_id = user_id
         init_db(self.db_path)
-        self.library = LibraryService(self.db_path)
+        self.library = LibraryService(self.db_path, user_id=self.user_id)
 
     def record_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
@@ -45,11 +50,11 @@ class PlaybackService:
             conn.execute(
                 """
                 INSERT INTO playback_sessions (
-                    session_id, track_id, started_at, ended_at, last_position_ms,
+                    user_id, session_id, track_id, started_at, ended_at, last_position_ms,
                     listen_ms, completed, skipped, last_event
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id) DO UPDATE SET
                     ended_at = COALESCE(excluded.ended_at, playback_sessions.ended_at),
                     last_position_ms = excluded.last_position_ms,
                     listen_ms = MAX(playback_sessions.listen_ms, excluded.listen_ms),
@@ -58,6 +63,7 @@ class PlaybackService:
                     last_event = excluded.last_event
                 """,
                 (
+                    self.user_id,
                     session_id,
                     track_id,
                     now,
@@ -74,28 +80,47 @@ class PlaybackService:
                 conn.execute(
                     """
                     INSERT INTO playback_events (
-                        session_id, track_id, event, position_ms, listen_ms, completed, created_at
+                        user_id, session_id, track_id, event,
+                        position_ms, listen_ms, completed, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_id, track_id, event, position_ms, listen_ms, int(completed), now),
+                    (
+                        self.user_id,
+                        session_id,
+                        track_id,
+                        event,
+                        position_ms,
+                        listen_ms,
+                        int(completed),
+                        now,
+                    ),
                 )
 
             if listen_ms >= HIGH_VALUE_LISTEN_MS or completed:
                 conn.execute(
                     """
                     INSERT INTO playback_recent (
-                        track_id, last_played_at, position_ms, listen_ms, completed, skipped
+                        user_id, track_id, last_played_at,
+                        position_ms, listen_ms, completed, skipped
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(track_id) DO UPDATE SET
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, track_id) DO UPDATE SET
                         last_played_at = excluded.last_played_at,
                         position_ms = excluded.position_ms,
                         listen_ms = MAX(playback_recent.listen_ms, excluded.listen_ms),
                         completed = excluded.completed,
                         skipped = excluded.skipped
                     """,
-                    (track_id, now, position_ms, listen_ms, int(completed), int(skipped)),
+                    (
+                        self.user_id,
+                        track_id,
+                        now,
+                        position_ms,
+                        listen_ms,
+                        int(completed),
+                        int(skipped),
+                    ),
                 )
 
         if listen_ms >= HIGH_VALUE_LISTEN_MS or completed:
@@ -119,11 +144,11 @@ class PlaybackService:
                        pr.completed, pr.skipped
                 FROM playback_recent pr
                 JOIN tracks t ON t.track_id = pr.track_id
-                WHERE pr.skipped = 0
+                WHERE pr.user_id = ? AND pr.skipped = 0
                 ORDER BY pr.last_played_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (self.user_id, limit),
             ).fetchall()
         result = []
         for row in rows:
@@ -146,9 +171,9 @@ class PlaybackService:
                 """
                 SELECT track_id, position_ms, listen_ms, completed, last_played_at
                 FROM playback_recent
-                WHERE track_id = ?
+                WHERE user_id = ? AND track_id = ?
                 """,
-                (track_id,),
+                (self.user_id, track_id),
             ).fetchone()
         if not row:
             return {

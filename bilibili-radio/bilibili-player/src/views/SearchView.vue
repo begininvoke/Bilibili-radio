@@ -4,29 +4,49 @@
       <h1>搜索</h1>
       <p class="hint">搜索 B站视频并直接加入播放队列；BV 号或视频链接仍可直接播放。</p>
 
-      <form class="search-box" @submit.prevent="handleSearch">
-        <AppIcon name="search" :size="18" class="search-icon" />
-        <input
-          v-model="input"
-          type="text"
-          placeholder="搜索关键词、BV 号或 bilibili.com 视频链接"
-          autocomplete="off"
+      <div class="search-control" @focusout="handleHistoryFocusOut">
+        <form class="search-box" @submit.prevent="submitSearch()">
+          <AppIcon name="search" :size="18" class="search-icon" />
+          <input
+            v-model="input"
+            type="text"
+            placeholder="搜索关键词、BV 号或 bilibili.com 视频链接"
+            autocomplete="off"
+            role="combobox"
+            aria-autocomplete="list"
+            :aria-expanded="showSearchHistory"
+            aria-controls="page-search-history"
+            :aria-activedescendant="activeHistoryId"
+            @focus="openSearchHistory"
+            @input="handleHistoryInput"
+            @keydown="handleHistoryKeydown"
+          />
+          <button class="search-btn" type="submit" :disabled="!input.trim() || searchLoading">
+            <LoadingDots v-if="searchLoading" light />
+            <span v-else>搜索</span>
+          </button>
+          <button
+            v-if="canDirectPlay"
+            class="play-btn"
+            type="button"
+            :disabled="isLoading"
+            @click="handlePlay"
+          >
+            <AppIcon name="play" :size="14" />
+            <span>播放</span>
+          </button>
+        </form>
+        <SearchHistoryMenu
+          v-if="showSearchHistory"
+          :items="searchHistory"
+          :active-index="activeHistoryIndex"
+          menu-id="page-search-history"
+          @select="selectHistoryItem"
+          @remove="removeHistoryItem"
+          @clear="clearSearchHistory"
+          @hover="activeHistoryIndex = $event"
         />
-        <button class="search-btn" type="submit" :disabled="!input.trim() || searchLoading">
-          <LoadingDots v-if="searchLoading" light />
-          <span v-else>搜索</span>
-        </button>
-        <button
-          v-if="canDirectPlay"
-          class="play-btn"
-          type="button"
-          :disabled="isLoading"
-          @click="handlePlay"
-        >
-          <AppIcon name="play" :size="14" />
-          <span>播放</span>
-        </button>
-      </form>
+      </div>
 
       <p v-if="searchError" class="error">{{ searchError }}</p>
       <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
@@ -97,18 +117,21 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ApiError, searchTracks } from '@/api/client'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
+import { useSearchHistory, useSearchHistoryMenu } from '@/composables/useSearchHistory'
 import type { Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
 import LoadingDots from '@/components/base/LoadingDots.vue'
 import TrackRow from '@/components/TrackRow.vue'
 import SectionHeader from '@/components/base/SectionHeader.vue'
+import SearchHistoryMenu from '@/components/SearchHistoryMenu.vue'
 
 const route = useRoute()
+const router = useRouter()
 const player = usePlayerStore()
 const library = useLibraryStore()
 const { currentTrack, videoInfo, isPlaying, isLoading, errorMessage } = storeToRefs(player)
@@ -122,6 +145,21 @@ const searchHasMore = ref(false)
 const searchMoreError = ref<string | null>(null)
 const searchError = ref<string | null>(null)
 const searchSentinel = ref<HTMLElement | null>(null)
+const { requestedSearch, rememberSuccessfulSearch } = useSearchHistory()
+const {
+  searchHistory,
+  activeIndex: activeHistoryIndex,
+  isVisible: showSearchHistory,
+  activeOptionId: activeHistoryId,
+  open: openSearchHistory,
+  close: closeSearchHistory,
+  handleInput: handleHistoryInput,
+  handleFocusOut: handleHistoryFocusOut,
+  handleKeydown: handleHistoryKeydown,
+  select: selectHistoryItem,
+  remove: removeHistoryItem,
+  clear: clearSearchHistory,
+} = useSearchHistoryMenu(input, 'page-search-history', executeHistorySearch)
 
 const pageSize = 20
 let searchSeq = 0
@@ -139,6 +177,13 @@ watch(
   },
   { immediate: true }
 )
+
+watch(requestedSearch, (request) => {
+  if (!request || route.name !== 'search') return
+  input.value = request.keyword
+  closeSearchHistory()
+  void handleSearch()
+})
 
 onMounted(() => {
   setupSearchObserver()
@@ -179,6 +224,8 @@ function isCurrent(candidate: Track): boolean {
 async function handleSearch() {
   const keyword = input.value.trim()
   if (!keyword) return
+  input.value = keyword
+  closeSearchHistory()
 
   const seq = ++searchSeq
   searchLoading.value = true
@@ -194,6 +241,7 @@ async function handleSearch() {
     results.value = data.tracks
     searchedKeyword.value = keyword
     searchHasMore.value = data.tracks.length === pageSize
+    rememberSuccessfulSearch(keyword)
     void nextTick().then(() => {
       setupSearchObserver()
       maybeLoadMoreSearchIfNeeded()
@@ -209,6 +257,22 @@ async function handleSearch() {
       searchLoading.value = false
     }
   }
+}
+
+function submitSearch(value = input.value) {
+  const keyword = value.trim()
+  if (!keyword) return
+  input.value = keyword
+  closeSearchHistory()
+  if (String(route.query.q || '').trim() === keyword) {
+    void handleSearch()
+    return
+  }
+  void router.push({ name: 'search', query: { q: keyword } })
+}
+
+function executeHistorySearch(value: string) {
+  submitSearch(value)
 }
 
 async function loadMoreSearch(force = false) {
@@ -337,17 +401,22 @@ function maybeLoadMoreSearchIfNeeded() {
 }
 
 .search-box {
-  margin-top: 16px;
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: 760px;
+  width: 100%;
   min-height: 44px;
   padding: 6px 6px 6px 14px;
   background: var(--color-bg-app);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-medium);
   transition: border-color 160ms ease;
+}
+
+.search-control {
+  position: relative;
+  width: min(760px, 100%);
+  margin-top: 16px;
 }
 
 .search-box:focus-within {

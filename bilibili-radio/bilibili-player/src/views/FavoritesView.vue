@@ -5,13 +5,13 @@
         <h1>B 站收藏夹</h1>
         <p>读取当前已登录账号的收藏夹</p>
       </div>
-      <button v-if="auth.isLoggedIn" class="ghost-btn" :disabled="folderLoading" @click="loadFolders">
+      <button v-if="auth.biliConnected" class="ghost-btn" :disabled="folderLoading" @click="loadFolders">
         <AppIcon name="repeat" :size="16" />
         <span>刷新</span>
       </button>
     </header>
 
-    <section v-if="!auth.isLoggedIn" class="login-required">
+    <section v-if="!auth.biliConnected" class="login-required">
       <h2>需要登录 B 站</h2>
       <p>收藏夹属于账号数据，请先扫码登录。</p>
       <button class="primary-btn" @click="goLogin">去登录</button>
@@ -153,8 +153,8 @@ watch(
 )
 
 onMounted(async () => {
-  await auth.initialize()
-  if (auth.isLoggedIn) {
+  await auth.initializeBili()
+  if (auth.biliConnected) {
     await loadFolders()
   }
 })
@@ -172,7 +172,7 @@ async function loadFolders() {
 }
 
 async function loadFolderTracks(mediaId: number) {
-  if (!auth.isLoggedIn) return
+  if (!auth.biliConnected) return
   trackLoading.value = true
   errorMessage.value = null
   try {

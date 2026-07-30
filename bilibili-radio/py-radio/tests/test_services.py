@@ -1,12 +1,17 @@
+import threading
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from flask import Flask
 
 from analysis_service import AnalysisService
 from auth_service import AuthService
 from bili_client import BiliClient
 from constant import BilibiliAPI as APIConst
 from database import get_connection
+from error_code import APIError
 from library_service import LibraryService
 from models import AudioStreamInfo, Track, make_track_id
 from playback_service import PlaybackService
@@ -15,6 +20,7 @@ from settings_service import SettingsService
 from stream_service import StreamService
 from track_service import (
     cover_info_from_video_data,
+    is_valid_subtitle_url,
     normalize_player_chapters,
     normalize_player_subtitles,
     normalize_reply_comments,
@@ -201,6 +207,18 @@ class BiliClientTests(unittest.TestCase):
         self.assertEqual(result["unavailable"], 1)
         self.assertEqual(session.last_headers["Cookie"], "SESSDATA=abc")
 
+    def test_resolve_bvid_cid_rejects_foreign_cid(self):
+        client = BiliClient()
+        client._get_video_detail_payload = lambda _bvid: {
+            "bvid": VALID_BVID,
+            "cid": 111,
+            "pages": [{"cid": 111}, {"cid": 222}],
+        }
+
+        self.assertEqual(client._resolve_bvid_cid(VALID_BVID, 222), (VALID_BVID, 222))
+        with self.assertRaises(APIError):
+            client._resolve_bvid_cid(VALID_BVID, 999)
+
 
 class LibraryServiceTests(unittest.TestCase):
     def setUp(self):
@@ -245,6 +263,51 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(result["duplicated"], 1)
         self.assertEqual(len(self.service.get_playlist(playlist["id"])["tracks"]), 1)
 
+    def test_batch_add_two_new_tracks_uses_one_write_transaction(self):
+        playlist = self.service.create_playlist("Two tracks")
+        tracks = [
+            Track(bvid=VALID_BVID, cid=1001, title="Track 1"),
+            Track(bvid=VALID_BVID, cid=1002, title="Track 2"),
+        ]
+
+        result = self.service.batch_add_playlist_items(playlist["id"], tracks=tracks)
+
+        self.assertEqual(result["added"], 2)
+        self.assertEqual(len(self.service.get_playlist(playlist["id"])["tracks"]), 2)
+
+    def test_batch_add_one_hundred_new_tracks(self):
+        playlist = self.service.create_playlist("One hundred tracks")
+        tracks = [
+            Track(bvid=VALID_BVID, cid=2000 + index, title=f"Track {index}")
+            for index in range(100)
+        ]
+
+        result = self.service.batch_add_playlist_items(playlist["id"], tracks=tracks)
+
+        self.assertEqual(result["added"], 100)
+        stored = self.service.get_playlist(playlist["id"])["tracks"]
+        self.assertEqual(len(stored), 100)
+        self.assertEqual([track["cid"] for track in stored], list(range(2000, 2100)))
+
+    def test_database_enables_wal_busy_timeout_and_query_indexes(self):
+        with get_connection(self.db_path) as conn:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            indexes = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+
+        self.assertEqual(journal_mode, "wal")
+        self.assertGreaterEqual(busy_timeout, 5_000)
+        self.assertGreaterEqual(user_version, 3)
+        self.assertIn("idx_recent_last_played_at", indexes)
+        self.assertIn("idx_playback_events_track_created", indexes)
+        self.assertIn("idx_playlist_items_playlist_position", indexes)
+
     def test_clear_recent_removes_recent_rows(self):
         self.service.add_recent(self.track, position_ms=42_000, listen_ms=20_000)
         self.assertEqual(len(self.service.list_recent()), 1)
@@ -253,6 +316,37 @@ class LibraryServiceTests(unittest.TestCase):
 
         self.assertEqual(result["removed"], 1)
         self.assertEqual(self.service.list_recent(), [])
+
+    def test_private_review_roundtrip_updates_and_deletes(self):
+        review = self.service.save_review(
+            self.track,
+            rating=4,
+            mood="平静",
+            note="适合晚上听",
+        )
+
+        self.assertEqual(review["rating"], 4)
+        self.assertEqual(review["mood"], "平静")
+        self.assertEqual(review["note"], "适合晚上听")
+        self.assertEqual(review["visibility"], "private")
+        self.assertEqual(
+            self.service.get_review(self.track.bvid, cid=self.track.cid)["trackId"],
+            self.track.track_id,
+        )
+
+        updated = self.service.save_review(self.track, rating=5, mood="治愈")
+        self.assertEqual(updated["rating"], 5)
+        self.assertEqual(updated["note"], "")
+
+        deleted = self.service.delete_review(self.track.bvid, cid=self.track.cid)
+        self.assertTrue(deleted["deleted"])
+        self.assertIsNone(self.service.get_review(self.track.bvid, cid=self.track.cid))
+
+    def test_private_review_validates_required_fields(self):
+        with self.assertRaises(APIError):
+            self.service.save_review(self.track, rating=0, mood="平静")
+        with self.assertRaises(APIError):
+            self.service.save_review(self.track, rating=3, mood="")
 
 
 class PlayerQueueServiceTests(unittest.TestCase):
@@ -497,7 +591,7 @@ class TrackDetailPanelTests(unittest.TestCase):
                         "id": 1,
                         "lan": "zh-CN",
                         "lan_doc": "中文",
-                        "subtitle_url": "//i0.hdslb.com/subtitle.json",
+                        "subtitle_url": "//i0.hdslb.com/bfs/subtitle/subtitle.json",
                     }
                 ]
             },
@@ -513,9 +607,33 @@ class TrackDetailPanelTests(unittest.TestCase):
         )
         chapters = normalize_player_chapters(player_data, VALID_BVID, 123)
 
-        self.assertEqual(subtitles["subtitles"][0]["url"], "https://i0.hdslb.com/subtitle.json")
+        self.assertEqual(subtitles["subtitles"][0]["url"], "https://i0.hdslb.com/bfs/subtitle/subtitle.json")
         self.assertEqual(subtitles["lines"][0]["text"], "Hi")
         self.assertEqual(chapters["chapters"][0]["title"], "Hook")
+
+    def test_subtitle_parser_rejects_non_subtitle_payloads(self):
+        self.assertTrue(is_valid_subtitle_url("//i0.hdslb.com/bfs/subtitle/test.json"))
+        self.assertTrue(
+            is_valid_subtitle_url(
+                "//aisubtitle.hdslb.com/bfs/ai_subtitle/prod/11425171696002329152446932"
+            )
+        )
+        self.assertFalse(is_valid_subtitle_url("https://api.bilibili.com/x/v2/dm/list.so"))
+        self.assertFalse(is_valid_subtitle_url("https://example.com/bfs/subtitle/test.json"))
+
+        self.assertEqual(normalize_subtitle_lines({"body": [{"content": "looks like danmaku"}]}), [])
+        self.assertEqual(
+            normalize_subtitle_lines(
+                {
+                    "body": [
+                        {"from": 1.0, "to": 3.0, "content": "valid"},
+                        {"from": 4.0, "to": 3.0, "content": "bad time"},
+                        {"from": 4.0, "to": 6.0, "content": ""},
+                    ]
+                }
+            ),
+            [{"from": 1.0, "to": 3.0, "text": "valid"}],
+        )
 
     def test_comments_are_normalized(self):
         result = normalize_reply_comments(
@@ -567,7 +685,108 @@ class FakeBiliClient:
         )
 
 
+class SequencedBiliClient:
+    def __init__(self, audio_infos):
+        self.audio_infos = list(audio_infos)
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def get_video_info(self, bvid):
+        raise AssertionError('cid should be supplied in this test')
+
+    def get_audio_stream(self, bvid, cid, quality='auto'):
+        with self._lock:
+            index = self.calls
+            self.calls += 1
+        return self.audio_infos[min(index, len(self.audio_infos) - 1)]
+
+
+class BlockingBiliClient(FakeBiliClient):
+    def __init__(self):
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+
+    def get_audio_stream(self, bvid, cid, quality='auto'):
+        with self._lock:
+            self.calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=2):
+            raise AssertionError('test did not release audio lookup')
+        return AudioStreamInfo(
+            url=f'https://primary.test/{bvid}/{cid}.m4a',
+            backup_urls=[],
+            duration=100,
+            bitrate=128000,
+            sample_rate=44100,
+            channels=2,
+            quality=quality,
+            actual_quality='standard',
+            stream_id=30232,
+        )
+
+
+class FakeUpstreamResponse:
+    def __init__(self, status_code, chunks=(), headers=None):
+        self.status_code = status_code
+        self._chunks = list(chunks)
+        self.headers = headers or {}
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        yield from self._chunks
+
+    def close(self):
+        self.closed = True
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise AssertionError(f'unexpected fake HTTP status: {self.status_code}')
+
+
+class FakeStreamSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def close(self):
+        pass
+
+
+def make_audio_info(url, backup_urls=None):
+    return AudioStreamInfo(
+        url=url,
+        backup_urls=backup_urls or [],
+        duration=100,
+        bitrate=128000,
+        sample_rate=44100,
+        channels=2,
+        quality='standard',
+        actual_quality='standard',
+        stream_id=30232,
+    )
+
+
 class StreamServiceTests(unittest.TestCase):
+    def test_proxy_headers_normalize_generic_audio_content_type(self):
+        upstream = FakeUpstreamResponse(
+            200,
+            headers={'Content-Type': 'application/octet-stream'},
+        )
+
+        headers = StreamService._proxy_response_headers(upstream)
+
+        self.assertEqual(headers['Content-Type'], 'audio/mp4')
+        self.assertEqual(headers['Accept-Ranges'], 'bytes')
+
     def test_audio_info_cache_uses_bvid_cid_quality_alias(self):
         client = FakeBiliClient()
         service = StreamService(client, cache_ttl_seconds=60)
@@ -579,6 +798,85 @@ class StreamServiceTests(unittest.TestCase):
         self.assertEqual(first.url, second.url)
         self.assertEqual(client.calls, 2)
         self.assertEqual(third.quality, "high")
+
+    def test_audio_info_single_flight_coalesces_concurrent_cache_misses(self):
+        client = BlockingBiliClient()
+        service = StreamService(client, cache_ttl_seconds=60)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(
+                    service.get_audio_info,
+                    VALID_BVID,
+                    123,
+                    'standard',
+                )
+                for _ in range(8)
+            ]
+            self.assertTrue(client.entered.wait(timeout=1))
+            client.release.set()
+            results = [future.result(timeout=2) for future in futures]
+
+        self.assertEqual(client.calls, 1)
+        self.assertEqual({result.url for result in results}, {results[0].url})
+
+    def test_proxy_stream_uses_backup_url_and_closes_upstreams(self):
+        client = SequencedBiliClient(
+            [make_audio_info('https://primary.test/audio', ['https://backup.test/audio'])]
+        )
+        failed = FakeUpstreamResponse(502)
+        succeeded = FakeUpstreamResponse(
+            206,
+            chunks=[b'audio'],
+            headers={
+                'Content-Type': 'audio/mp4',
+                'Content-Range': 'bytes 0-4/5',
+            },
+        )
+        session = FakeStreamSession([failed, succeeded])
+        service = StreamService(client, session=session)
+        flask_app = Flask(__name__)
+
+        with flask_app.test_request_context(
+            '/api/tracks/test/123/stream',
+            headers={'Range': 'bytes=0-'},
+        ):
+            response = service.proxy_stream(VALID_BVID, cid=123, quality='standard')
+            self.assertEqual(response.get_data(), b'audio')
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual([call[0] for call in session.calls], [
+            'https://primary.test/audio',
+            'https://backup.test/audio',
+        ])
+        self.assertEqual(session.calls[1][1]['headers']['Range'], 'bytes=0-')
+        self.assertTrue(failed.closed)
+        self.assertTrue(succeeded.closed)
+
+    def test_proxy_stream_refreshes_expired_playurl_once(self):
+        client = SequencedBiliClient(
+            [
+                make_audio_info('https://expired.test/audio'),
+                make_audio_info('https://fresh.test/audio'),
+            ]
+        )
+        expired = FakeUpstreamResponse(403)
+        succeeded = FakeUpstreamResponse(200, chunks=[b'fresh'])
+        session = FakeStreamSession([expired, succeeded])
+        service = StreamService(client, session=session)
+        flask_app = Flask(__name__)
+
+        with flask_app.test_request_context('/api/tracks/test/123/stream'):
+            response = service.proxy_stream(VALID_BVID, cid=123, quality='standard')
+            self.assertEqual(response.get_data(), b'fresh')
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(
+            [call[0] for call in session.calls],
+            ['https://expired.test/audio', 'https://fresh.test/audio'],
+        )
+        self.assertTrue(expired.closed)
+        self.assertTrue(succeeded.closed)
 
 
 class FakeAppStreamService:
@@ -601,6 +899,24 @@ class FakeAppStreamService:
 
 
 class AppEndpointTests(unittest.TestCase):
+    def test_http_player_compatibility_is_stateless_and_observable(self):
+        import app as app_module
+
+        response = app_module.app.test_client().get(
+            '/api/player/status',
+            headers={'X-Request-ID': 'test-request-123'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['X-Request-ID'], 'test-request-123')
+        self.assertIn('app_headers;dur=', response.headers['Server-Timing'])
+        self.assertEqual(
+            response.get_json()['data'],
+            {'has_video': False, 'video_info': None},
+        )
+        self.assertFalse(hasattr(app_module, 'socketio'))
+        self.assertFalse(hasattr(app_module, 'current_video_info'))
+
     def test_stream_info_returns_part_level_proxy_url(self):
         import app as app_module
 
@@ -693,6 +1009,53 @@ class AppEndpointTests(unittest.TestCase):
         self.assertTrue(app_module._is_allowed_image_host("i0.hdslb.com"))
         self.assertTrue(app_module._is_allowed_image_host("member.bilibili.com"))
         self.assertFalse(app_module._is_allowed_image_host("example.com"))
+
+    def test_image_proxy_blocks_redirect_to_disallowed_host(self):
+        import app as app_module
+
+        redirect = FakeUpstreamResponse(
+            302,
+            headers={'Location': 'http://127.0.0.1/private'},
+        )
+        fake_session = FakeStreamSession([redirect])
+        original_session = app_module._image_session
+        app_module._image_session = fake_session
+        try:
+            response = app_module.app.test_client().get(
+                '/api/images/proxy',
+                query_string={'url': 'https://i0.hdslb.com/image.jpg'},
+            )
+        finally:
+            app_module._image_session = original_session
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(len(fake_session.calls), 1)
+        self.assertTrue(redirect.closed)
+
+    def test_image_proxy_closes_upstream_and_reports_timing(self):
+        import app as app_module
+
+        upstream = FakeUpstreamResponse(
+            200,
+            chunks=[b'image'],
+            headers={'Content-Type': 'image/jpeg', 'Content-Length': '5'},
+        )
+        fake_session = FakeStreamSession([upstream])
+        original_session = app_module._image_session
+        app_module._image_session = fake_session
+        try:
+            response = app_module.app.test_client().get(
+                '/api/images/proxy',
+                query_string={'url': 'https://i0.hdslb.com/image.jpg'},
+            )
+        finally:
+            app_module._image_session = original_session
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_data(), b'image')
+        self.assertIn('image_upstream_headers;dur=', response.headers['Server-Timing'])
+        self.assertIn('app_headers;dur=', response.headers['Server-Timing'])
+        self.assertTrue(upstream.closed)
 
 
 class ModelTests(unittest.TestCase):

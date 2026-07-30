@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import html
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from models import BiliUserProfile, FavoriteFolder, Track, VideoDetail, VideoInfo, normalize_bvid
 
 
 TAG_RE = re.compile(r"<[^>]+>")
+SUBTITLE_PATH_MARKERS = ("/bfs/subtitle/", "/bfs/ai_subtitle/")
 
 
 def clean_text(value: Any) -> str:
@@ -26,6 +29,20 @@ def normalize_cover(url: Any) -> str:
     if value.startswith("http://"):
         return f"https://{value[7:]}"
     return value
+
+
+def is_valid_subtitle_url(url: Any) -> bool:
+    value = normalize_cover(url)
+    if not value:
+        return False
+    parsed = urlparse(value)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    # Bilibili's manually uploaded subtitles end in .json, while AI subtitle
+    # payloads use an extensionless /bfs/ai_subtitle/prod/... URL.
+    return parsed.scheme == "https" and host.endswith(".hdslb.com") and any(
+        marker in path for marker in SUBTITLE_PATH_MARKERS
+    )
 
 
 def parse_duration(value: Any) -> int:
@@ -208,21 +225,27 @@ def normalize_player_subtitles(
     cid: int,
     lines: Optional[list[dict[str, Any]]] = None,
     selected_subtitle_id: Optional[int] = None,
+    source_aid: Optional[int] = None,
 ) -> dict[str, Any]:
     subtitle_data = player_data.get("subtitle") or {}
     subtitles = []
     for item in subtitle_data.get("subtitles") or []:
         subtitle_id = int(item.get("id") or item.get("subtitle_id") or 0)
-        subtitles.append(
-            {
-                "id": subtitle_id,
-                "lan": str(item.get("lan") or ""),
-                "lanDoc": str(item.get("lan_doc") or item.get("lanDoc") or ""),
-                "url": normalize_cover(item.get("subtitle_url") or item.get("subtitleUrl")),
-                "authorMid": int(item.get("author_mid") or item.get("authorMid") or 0),
-                "type": int(item.get("type") or 0),
-            }
-        )
+        subtitle_url = normalize_cover(item.get("subtitle_url") or item.get("subtitleUrl"))
+        if not is_valid_subtitle_url(subtitle_url):
+            continue
+        subtitle = {
+            "id": subtitle_id,
+            "lan": str(item.get("lan") or ""),
+            "lanDoc": str(item.get("lan_doc") or item.get("lanDoc") or ""),
+            "url": subtitle_url,
+            "authorMid": int(item.get("author_mid") or item.get("authorMid") or 0),
+            "type": int(item.get("type") or 0),
+            "sourceCid": int(cid),
+        }
+        if source_aid is not None:
+            subtitle["sourceAid"] = int(source_aid)
+        subtitles.append(subtitle)
 
     return {
         "bvid": normalize_bvid(bvid),
@@ -236,14 +259,30 @@ def normalize_player_subtitles(
 
 def normalize_subtitle_lines(payload: dict[str, Any]) -> list[dict[str, Any]]:
     lines = []
-    for item in payload.get("body") or []:
+    body = payload.get("body")
+    if not isinstance(body, list):
+        return lines
+    for item in body:
+        if not isinstance(item, dict):
+            continue
+        if not {"from", "to", "content"}.issubset(item.keys()):
+            continue
+        try:
+            from_time = float(item.get("from") or 0)
+            to_time = float(item.get("to") or 0)
+        except (TypeError, ValueError):
+            continue
+        text = clean_text(item.get("content"))
+        if not text or not math.isfinite(from_time) or not math.isfinite(to_time) or to_time <= from_time:
+            continue
         lines.append(
             {
-                "from": float(item.get("from") or 0),
-                "to": float(item.get("to") or 0),
-                "text": clean_text(item.get("content")),
+                "from": from_time,
+                "to": to_time,
+                "text": text,
             }
         )
+    lines.sort(key=lambda line: (line["from"], line["to"]))
     return lines
 
 

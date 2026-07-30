@@ -1,14 +1,24 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 
+if (window.location.pathname === '/admin/genshin' && !window.location.hash) {
+  window.history.replaceState(null, '', `/#/admin/genshin${window.location.search}`)
+}
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     {
+      path: '/session-unavailable',
+      name: 'session-unavailable',
+      component: () => import('@/views/SessionUnavailableView.vue'),
+      meta: { layout: 'auth', sessionRecovery: true },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/LoginView.vue'),
-      meta: { layout: 'auth', public: true },
+      meta: { layout: 'auth' },
     },
     {
       path: '/',
@@ -41,6 +51,17 @@ const router = createRouter({
       component: () => import('@/views/LikesView.vue'),
     },
     {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('@/views/AdminView.vue'),
+      meta: { requiresAdmin: true },
+    },
+    {
+      path: '/admin/genshin',
+      name: 'admin-genshin',
+      component: () => import('@/views/GenshinRoleView.vue'),
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },
@@ -48,15 +69,25 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
-  const auth = useAuthStore()
-  if (to.meta.public) return true
+  if (to.meta.sessionRecovery) return true
 
-  await auth.initialize()
-  if (auth.loginRequired && !auth.isLoggedIn) {
+  const auth = useAuthStore()
+  try {
+    await auth.initializeSession()
+  } catch {
     return {
-      name: 'login',
+      name: 'session-unavailable',
       query: { redirect: to.fullPath },
     }
+  }
+
+  if (!auth.appAuthenticated) {
+    auth.loginWithOidc()
+    return false
+  }
+
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
+    return { name: 'home', query: { denied: 'admin' } }
   }
 
   return true

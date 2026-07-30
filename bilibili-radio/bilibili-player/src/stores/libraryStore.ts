@@ -19,6 +19,13 @@ const LIKES_KEY = 'bili-radio:likes'
 const PLAYLISTS_KEY = 'bili-radio:playlists'
 
 const RECENT_LIMIT = 100
+const MIGRATION_CONCURRENCY = 4
+
+interface MigrationResult {
+  recent: boolean
+  likes: boolean
+  playlists: boolean
+}
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -27,6 +34,28 @@ function load<T>(key: string, fallback: T): T {
   } catch {
     return fallback
   }
+}
+
+async function runWithConcurrency(tasks: Array<() => Promise<unknown>>, limit: number): Promise<void> {
+  if (tasks.length === 0) return
+
+  let cursor = 0
+  const errors: unknown[] = []
+  const workerCount = Math.min(Math.max(1, limit), tasks.length)
+
+  async function worker() {
+    while (cursor < tasks.length) {
+      const taskIndex = cursor++
+      try {
+        await tasks[taskIndex]()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  if (errors.length > 0) throw errors[0]
 }
 
 export const useLibraryStore = defineStore('library', () => {
@@ -38,13 +67,23 @@ export const useLibraryStore = defineStore('library', () => {
   const syncError = ref<string | null>(null)
 
   let initialized = false
+  let initializePromise: Promise<void> | null = null
 
   watch(recent, (v) => localStorage.setItem(RECENT_KEY, JSON.stringify(v)), { deep: true })
   watch(likes, (v) => localStorage.setItem(LIKES_KEY, JSON.stringify(v)), { deep: true })
   watch(playlists, (v) => localStorage.setItem(PLAYLISTS_KEY, JSON.stringify(v)), { deep: true })
 
-  async function initialize() {
-    if (initialized || isSyncing.value) return
+  function initialize(): Promise<void> {
+    if (initialized) return Promise.resolve()
+    if (initializePromise) return initializePromise
+
+    initializePromise = initializeLibrary().finally(() => {
+      initializePromise = null
+    })
+    return initializePromise
+  }
+
+  async function initializeLibrary() {
 
     const localRecent = [...recent.value]
     const localLikes = [...likes.value]
@@ -64,16 +103,29 @@ export const useLibraryStore = defineStore('library', () => {
       likes.value = mergeTracks(remoteLikes, localLikes)
       playlists.value = mergePlaylists(remotePlaylists, localPlaylists)
 
-      await migrateLocalFallback(localRecent, localLikes, localPlaylists, remoteRecent, remoteLikes, remotePlaylists)
+      const migrated = await migrateLocalFallback(
+        localRecent,
+        localLikes,
+        localPlaylists,
+        remoteRecent,
+        remoteLikes,
+        remotePlaylists
+      )
 
       const [finalRecent, finalLikes, finalPlaylists] = await Promise.all([
-        fetchRecent(RECENT_LIMIT),
-        fetchLikes(),
-        fetchPlaylists(),
+        migrated.recent ? fetchRecent(RECENT_LIMIT) : Promise.resolve(null),
+        migrated.likes ? fetchLikes() : Promise.resolve(null),
+        migrated.playlists ? fetchPlaylists() : Promise.resolve(null),
       ])
-      recent.value = finalRecent.length ? finalRecent : recent.value
-      likes.value = finalLikes.length ? finalLikes : likes.value
-      playlists.value = finalPlaylists.length ? finalPlaylists : playlists.value
+      if (finalRecent !== null) {
+        recent.value = finalRecent.length ? finalRecent : recent.value
+      }
+      if (finalLikes !== null) {
+        likes.value = finalLikes.length ? finalLikes : likes.value
+      }
+      if (finalPlaylists !== null) {
+        playlists.value = finalPlaylists.length ? finalPlaylists : playlists.value
+      }
       initialized = true
     } catch (error) {
       backendAvailable.value = false
@@ -202,17 +254,24 @@ export const useLibraryStore = defineStore('library', () => {
     remoteRecent: Track[],
     remoteLikes: Track[],
     remotePlaylists: Playlist[]
-  ) {
+  ): Promise<MigrationResult> {
     const recentToPush = localRecent.filter((track) => !remoteRecent.some((remote) => isSameTrack(remote, track)))
     const likesToPush = localLikes.filter((track) => !remoteLikes.some((remote) => isSameTrack(remote, track)))
     const playlistNames = new Set(remotePlaylists.map((playlist) => playlist.name))
     const playlistsToPush = localPlaylists.filter((playlist) => !playlistNames.has(playlist.name))
 
-    await Promise.all([
-      ...recentToPush.map((track) => addRecentTrack(track)),
-      ...likesToPush.map((track) => addLikeTrack(track)),
-      ...playlistsToPush.map((playlist) => createPlaylistRemote(playlist.name, playlist.tracks)),
-    ])
+    const tasks: Array<() => Promise<unknown>> = [
+      ...recentToPush.map((track) => () => addRecentTrack(track)),
+      ...likesToPush.map((track) => () => addLikeTrack(track)),
+      ...playlistsToPush.map((playlist) => () => createPlaylistRemote(playlist.name, playlist.tracks)),
+    ]
+    await runWithConcurrency(tasks, MIGRATION_CONCURRENCY)
+
+    return {
+      recent: recentToPush.length > 0,
+      likes: likesToPush.length > 0,
+      playlists: playlistsToPush.length > 0,
+    }
   }
 
   function mergeTracks(primary: Track[], fallback: Track[]): Track[] {

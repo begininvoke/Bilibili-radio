@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,9 +15,10 @@ from typing import Any, Optional
 import requests
 
 from constant import BilibiliAPI as APIConst, HttpHeader
-from database import DEFAULT_DB_PATH, get_connection, init_db
+from database import DEFAULT_DB_PATH, LEGACY_OWNER_USER_ID, get_connection, init_db
 from error_code import APIError
 from models import BiliUserProfile
+from monitoring import record_bilibili_request
 from track_service import normalize_user_profile
 
 
@@ -162,9 +164,11 @@ class AuthService:
         db_path: Optional[Path | str] = None,
         session: Optional[requests.Session] = None,
         timeout: int = 10,
+        user_id: str = LEGACY_OWNER_USER_ID,
     ):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.timeout = timeout
+        self.user_id = user_id
         self.session = session or requests.Session()
         self.session.headers.update(HttpHeader.default_headers())
         init_db(self.db_path)
@@ -195,17 +199,18 @@ class AuthService:
             conn.execute(
                 """
                 INSERT INTO auth_qr_sessions (
-                    qrcode_key, url, status, message, created_at, updated_at, expires_at
+                    user_id, qrcode_key, url, status, message,
+                    created_at, updated_at, expires_at
                 )
-                VALUES (?, ?, 'waiting', NULL, ?, ?, ?)
-                ON CONFLICT(qrcode_key) DO UPDATE SET
+                VALUES (?, ?, ?, 'waiting', NULL, ?, ?, ?)
+                ON CONFLICT(user_id, qrcode_key) DO UPDATE SET
                     url = excluded.url,
                     status = excluded.status,
                     message = excluded.message,
                     updated_at = excluded.updated_at,
                     expires_at = excluded.expires_at
                 """,
-                (qrcode_key, url, now, now, expires_at),
+                (self.user_id, qrcode_key, url, now, now, expires_at),
             )
 
         return {
@@ -219,6 +224,14 @@ class AuthService:
         qrcode_key = (qrcode_key or "").strip()
         if not qrcode_key:
             raise APIError.validation_error("qrcodeKey is required")
+
+        with get_connection(self.db_path) as conn:
+            owned_qr = conn.execute(
+                "SELECT 1 FROM auth_qr_sessions WHERE user_id = ? AND qrcode_key = ?",
+                (self.user_id, qrcode_key),
+            ).fetchone()
+        if not owned_qr:
+            raise APIError.not_found("QR code session not found")
 
         response = self._get(
             APIConst.QR_POLL_URL,
@@ -297,8 +310,8 @@ class AuthService:
     def logout(self) -> dict[str, Any]:
         with get_connection(self.db_path) as conn:
             cursor = conn.execute(
-                "DELETE FROM auth_state WHERE provider = ?",
-                (BILI_PROVIDER,),
+                "DELETE FROM bili_accounts WHERE user_id = ? AND provider = ?",
+                (self.user_id, BILI_PROVIDER),
             )
         return {"loggedOut": cursor.rowcount > 0}
 
@@ -326,16 +339,16 @@ class AuthService:
         with get_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO auth_state (
-                    provider, cookie_encrypted, refresh_token_encrypted, user_mid,
+                INSERT INTO bili_accounts (
+                    user_id, provider, cookie_encrypted, refresh_token_encrypted, user_mid,
                     user_name, user_face, cookie_updated_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
                     cookie_encrypted = excluded.cookie_encrypted,
                     refresh_token_encrypted = COALESCE(
                         excluded.refresh_token_encrypted,
-                        auth_state.refresh_token_encrypted
+                        bili_accounts.refresh_token_encrypted
                     ),
                     user_mid = excluded.user_mid,
                     user_name = excluded.user_name,
@@ -344,6 +357,7 @@ class AuthService:
                     updated_at = excluded.updated_at
                 """,
                 (
+                    self.user_id,
                     BILI_PROVIDER,
                     encrypted_cookie,
                     encrypted_refresh_token,
@@ -361,16 +375,16 @@ class AuthService:
                 """
                 UPDATE auth_qr_sessions
                 SET status = ?, message = ?, updated_at = ?
-                WHERE qrcode_key = ?
+                WHERE user_id = ? AND qrcode_key = ?
                 """,
-                (status, message, utc_now(), qrcode_key),
+                (status, message, utc_now(), self.user_id, qrcode_key),
             )
 
     def _auth_row(self):
         with get_connection(self.db_path) as conn:
             return conn.execute(
-                "SELECT * FROM auth_state WHERE provider = ?",
-                (BILI_PROVIDER,),
+                "SELECT * FROM bili_accounts WHERE user_id = ? AND provider = ?",
+                (self.user_id, BILI_PROVIDER),
             ).fetchone()
 
     def _decrypt_refresh_token(self, row: Any) -> Optional[str]:
@@ -385,6 +399,9 @@ class AuthService:
         params: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, str]] = None,
     ) -> requests.Response:
+        started_at = time.perf_counter()
+        outcome = "success"
+        operation = "auth_qr" if context.startswith("QR code") else "auth"
         try:
             response = self.session.get(
                 url,
@@ -392,12 +409,22 @@ class AuthService:
                 headers=headers or HttpHeader.default_headers(),
                 timeout=self.timeout,
             )
+            if response.status_code in {412, 429}:
+                outcome = "rate_limited"
+            elif response.status_code in {401, 403}:
+                outcome = "auth_error"
+            elif response.status_code >= 400:
+                outcome = "upstream_error"
             response.raise_for_status()
             return response
         except requests.Timeout:
+            outcome = "timeout"
             raise APIError.request_timeout(context)
         except requests.RequestException as exc:
+            outcome = "upstream_error"
             raise APIError.network_error(str(exc))
+        finally:
+            record_bilibili_request(operation, outcome, time.perf_counter() - started_at)
 
     @staticmethod
     def _json_payload(response: requests.Response, context: str) -> dict[str, Any]:

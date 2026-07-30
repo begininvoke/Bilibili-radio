@@ -7,14 +7,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, defineAsyncComponent, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useAuthStore } from '@/stores/authStore'
 import AppShell from '@/components/layout/AppShell.vue'
-import NowPlayingView from '@/views/NowPlayingView.vue'
+
+const NowPlayingView = defineAsyncComponent(() => import('@/views/NowPlayingView.vue'))
 
 const route = useRoute()
 const player = usePlayerStore()
@@ -24,19 +25,17 @@ const auth = useAuthStore()
 
 const isAuthLayout = computed(() => route.meta.layout === 'auth')
 
-onMounted(() => {
-  void auth.initialize()
-  initializeAppServices()
-})
-
-watch(isAuthLayout, () => {
-  initializeAppServices()
-})
+watch(
+  [isAuthLayout, () => auth.appAuthenticated],
+  () => initializeAppServices(),
+  { immediate: true }
+)
 
 function initializeAppServices() {
-  if (isAuthLayout.value) return
+  if (isAuthLayout.value || !auth.appAuthenticated) return
+  void auth.initializeBili()
   void library.initialize()
-  player.initialize()
+  void player.initialize()
 }
 </script>
 

@@ -15,6 +15,13 @@
     <template v-if="name === 'play'">
       <polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none" />
     </template>
+    <template v-else-if="name === 'star-filled'">
+      <path
+        d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </template>
     <template v-else-if="name === 'volume-high' || name === 'volume-low' || name === 'volume-mute'">
       <polygon points="4 9 4 15 8 15 13 20 13 4 8 9 4 9" fill="currentColor" stroke="none" />
     </template>
@@ -93,6 +100,12 @@ const ICONS: Record<string, IconDef> = {
   subtitle: { paths: ['M4 6h16v12H4z', 'M7 13h3', 'M13 13h4', 'M7 16h6'] },
   pip: { paths: ['M3 5h18v14H3z', 'M12 12h7v5h-7z'] },
   more: { paths: [], circles: [{ cx: 5, cy: 12, r: 1.4, fill: 'currentColor' }, { cx: 12, cy: 12, r: 1.4, fill: 'currentColor' }, { cx: 19, cy: 12, r: 1.4, fill: 'currentColor' }] },
+  shield: { paths: ['M12 3 20 6v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3z', 'M9 12l2 2 4-4'] },
+  user: { paths: ['M4 21a8 8 0 0 1 16 0'], circles: [{ cx: 12, cy: 7, r: 4 }] },
+  logout: { paths: ['M10 4H5v16h5', 'M14 8l4 4-4 4', 'M8 12h10'] },
+  activity: { paths: ['M3 12h4l2-6 4 12 2-6h6'] },
+  'external-link': { paths: ['M14 4h6v6', 'M20 4l-9 9', 'M18 13v7H4V6h7'] },
+  menu: { paths: ['M4 7h16', 'M4 12h16', 'M4 17h16'] },
 }
 
 const def = computed<IconDef>(() => ICONS[props.name] ?? { paths: [] })

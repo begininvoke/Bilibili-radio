@@ -42,7 +42,7 @@ class HttpHeader:
 class BilibiliAPI:
     VIDEO_INFO_URL = "https://api.bilibili.com/x/web-interface/view"
     PLAY_URL = "https://api.bilibili.com/x/player/playurl"
-    PLAYER_INFO_URL = "https://api.bilibili.com/x/player/v2"
+    PLAYER_INFO_URL = "https://api.bilibili.com/x/player/wbi/v2"
     REPLY_MAIN_URL = "https://api.bilibili.com/x/v2/reply/main"
     NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
     QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"

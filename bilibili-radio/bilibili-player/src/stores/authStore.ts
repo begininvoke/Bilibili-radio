@@ -2,19 +2,31 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
   createBiliLoginQr,
+  fetchAppSession,
   fetchAuthStatus,
+  logoutAppSession,
   logoutBili,
   pollBiliLoginQr,
+  redirectToOidcLogin,
+  setApiCsrfToken,
 } from '@/api/client'
-import type { AuthQrCode, AuthQrStatus, AuthStatus, BiliUserProfile } from '@/types'
+import type {
+  AppSession,
+  AuthQrCode,
+  AuthQrStatus,
+  AuthStatus,
+  BiliUserProfile,
+} from '@/types'
 
-function readLoginRequired(): boolean {
-  const value = import.meta.env.VITE_REQUIRE_BILI_LOGIN
-  if (value == null || value === '') return import.meta.env.PROD
-  return !['0', 'false', 'off', 'no'].includes(String(value).toLowerCase())
+const defaultAppSession: AppSession = {
+  authenticated: false,
+  user: null,
+  csrfToken: null,
+  oidcEnabled: true,
+  biliConnected: false,
 }
 
-const defaultStatus: AuthStatus = {
+const defaultBiliStatus: AuthStatus = {
   qrLoginEnabled: true,
   isLoggedIn: false,
   user: null,
@@ -22,54 +34,91 @@ const defaultStatus: AuthStatus = {
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const loginRequired = readLoginRequired()
-  const status = ref<AuthStatus>(defaultStatus)
+  const appSession = ref<AppSession>(defaultAppSession)
+  const biliStatus = ref<AuthStatus>(defaultBiliStatus)
   const qrCode = ref<AuthQrCode | null>(null)
   const qrStatus = ref<AuthQrStatus | null>(null)
-  const isChecking = ref(false)
+  const isSessionChecking = ref(false)
+  const isBiliChecking = ref(false)
   const isQrLoading = ref(false)
-  const errorMessage = ref<string | null>(null)
-  const hasLoaded = ref(false)
+  const sessionError = ref<string | null>(null)
+  const biliError = ref<string | null>(null)
+  const hasSessionLoaded = ref(false)
+  const hasBiliLoaded = ref(false)
 
-  let statusPromise: Promise<AuthStatus> | null = null
+  let sessionPromise: Promise<AppSession> | null = null
+  let biliStatusPromise: Promise<AuthStatus> | null = null
 
-  const isLoggedIn = computed(() => status.value.isLoggedIn)
-  const user = computed<BiliUserProfile | null>(() => status.value.user)
+  const appAuthenticated = computed(() => appSession.value.authenticated)
+  const appUser = computed(() => appSession.value.user)
+  const isAdmin = computed(() => appSession.value.user?.role === 'admin')
+  const biliConnected = computed(
+    () => biliStatus.value.isLoggedIn || appSession.value.biliConnected
+  )
+  const biliUser = computed<BiliUserProfile | null>(() => biliStatus.value.user)
 
-  async function initialize(refresh = false): Promise<AuthStatus> {
-    if (hasLoaded.value && !refresh) return status.value
-    if (statusPromise) return statusPromise
+  async function initializeSession(refresh = false): Promise<AppSession> {
+    if (hasSessionLoaded.value && !refresh) return appSession.value
+    if (sessionPromise) return sessionPromise
 
-    isChecking.value = true
-    errorMessage.value = null
-    statusPromise = fetchAuthStatus(refresh)
+    isSessionChecking.value = true
+    sessionError.value = null
+    sessionPromise = fetchAppSession()
       .then((data) => {
-        status.value = data
-        hasLoaded.value = true
+        appSession.value = data
+        hasSessionLoaded.value = true
+        setApiCsrfToken(data.csrfToken)
         return data
       })
       .catch((error) => {
-        status.value = defaultStatus
-        hasLoaded.value = true
-        errorMessage.value = error instanceof Error ? error.message : '登录状态检查失败'
-        return status.value
+        appSession.value = defaultAppSession
+        hasSessionLoaded.value = false
+        setApiCsrfToken(null)
+        sessionError.value = error instanceof Error ? error.message : '应用登录状态检查失败'
+        throw error
       })
       .finally(() => {
-        isChecking.value = false
-        statusPromise = null
+        isSessionChecking.value = false
+        sessionPromise = null
       })
-    return statusPromise
+    return sessionPromise
+  }
+
+  async function initializeBili(refresh = false): Promise<AuthStatus> {
+    if (hasBiliLoaded.value && !refresh) return biliStatus.value
+    if (biliStatusPromise) return biliStatusPromise
+
+    isBiliChecking.value = true
+    biliError.value = null
+    biliStatusPromise = fetchAuthStatus(refresh)
+      .then((data) => {
+        biliStatus.value = data
+        appSession.value = { ...appSession.value, biliConnected: data.isLoggedIn }
+        hasBiliLoaded.value = true
+        return data
+      })
+      .catch((error) => {
+        biliStatus.value = defaultBiliStatus
+        hasBiliLoaded.value = true
+        biliError.value = error instanceof Error ? error.message : 'B 站登录状态检查失败'
+        return biliStatus.value
+      })
+      .finally(() => {
+        isBiliChecking.value = false
+        biliStatusPromise = null
+      })
+    return biliStatusPromise
   }
 
   async function startQrLogin(): Promise<AuthQrCode> {
     isQrLoading.value = true
-    errorMessage.value = null
+    biliError.value = null
     qrStatus.value = null
     try {
       qrCode.value = await createBiliLoginQr()
       return qrCode.value
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '二维码生成失败'
+      biliError.value = error instanceof Error ? error.message : '二维码生成失败'
       throw error
     } finally {
       isQrLoading.value = false
@@ -82,43 +131,67 @@ export const useAuthStore = defineStore('auth', () => {
       const nextStatus = await pollBiliLoginQr(qrCode.value.qrcodeKey)
       qrStatus.value = nextStatus
       if (nextStatus.status === 'confirmed') {
-        status.value = {
+        biliStatus.value = {
           qrLoginEnabled: true,
           isLoggedIn: true,
           user: nextStatus.user,
           cookieUpdatedAt: new Date().toISOString(),
         }
-        hasLoaded.value = true
+        appSession.value = { ...appSession.value, biliConnected: true }
+        hasBiliLoaded.value = true
       }
       return nextStatus
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '扫码状态检查失败'
+      biliError.value = error instanceof Error ? error.message : '扫码状态检查失败'
       return null
     }
   }
 
-  async function logout() {
+  async function disconnectBili(): Promise<void> {
     await logoutBili()
-    status.value = defaultStatus
+    biliStatus.value = defaultBiliStatus
+    appSession.value = { ...appSession.value, biliConnected: false }
     qrCode.value = null
     qrStatus.value = null
-    hasLoaded.value = true
+    hasBiliLoaded.value = true
+  }
+
+  async function logoutApp(): Promise<void> {
+    await logoutAppSession()
+    appSession.value = defaultAppSession
+    biliStatus.value = defaultBiliStatus
+    hasSessionLoaded.value = true
+    hasBiliLoaded.value = false
+    setApiCsrfToken(null)
+  }
+
+  function loginWithOidc(next?: string): void {
+    redirectToOidcLogin(next)
   }
 
   return {
-    loginRequired,
-    status,
+    appSession,
+    biliStatus,
     qrCode,
     qrStatus,
-    isChecking,
+    isSessionChecking,
+    isBiliChecking,
     isQrLoading,
-    errorMessage,
-    hasLoaded,
-    isLoggedIn,
-    user,
-    initialize,
+    sessionError,
+    biliError,
+    hasSessionLoaded,
+    hasBiliLoaded,
+    appAuthenticated,
+    appUser,
+    isAdmin,
+    biliConnected,
+    biliUser,
+    initializeSession,
+    initializeBili,
     startQrLogin,
     pollQrLogin,
-    logout,
+    disconnectBili,
+    logoutApp,
+    loginWithOidc,
   }
 })

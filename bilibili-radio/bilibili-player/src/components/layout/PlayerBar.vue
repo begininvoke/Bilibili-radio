@@ -3,7 +3,7 @@
     <!-- 左侧 30%：当前内容 -->
     <div class="player-left">
       <template v-if="track">
-        <div class="mini-cover" @click="ui.openNowPlaying()">
+        <div class="mini-cover" @click.stop="openNowPlaying">
           <img v-if="track.cover" :src="mediaUrl(track.cover)" :alt="track.title" />
           <div v-else class="cover-fallback">
             <AppIcon name="disc" :size="22" />
@@ -113,7 +113,7 @@
       >
         <AppIcon name="download" :size="18" :class="{ 'spin-slow': isDownloading }" />
       </button>
-      <button class="icon-btn" title="打开播放详情" :disabled="!track" @click="ui.openNowPlaying()">
+      <button class="icon-btn" title="打开播放详情" :disabled="!canOpenNowPlaying" @click.stop="openNowPlaying">
         <AppIcon name="fullscreen" :size="18" />
       </button>
     </div>
@@ -160,6 +160,7 @@ const track = computed<Track | null>(() => {
 
 const hasQueue = computed(() => player.queue.length > 0)
 const canPlay = computed(() => track.value !== null && !isLoading.value)
+const canOpenNowPlaying = computed(() => player.hasTrack)
 const isLiked = computed(() => (track.value ? library.isLiked(track.value.bvid) : false))
 const isDesktop = computed(() => window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost')
 
@@ -174,6 +175,11 @@ const modeLabel = computed(() => MODE_META[player.playMode].label)
 
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
+}
+
+function openNowPlaying() {
+  if (!player.hasTrack) return
+  ui.openNowPlaying()
 }
 </script>
 

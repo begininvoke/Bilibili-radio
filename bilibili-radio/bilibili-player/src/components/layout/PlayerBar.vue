@@ -83,22 +83,25 @@
     <div class="player-right">
       <VolumeControl />
       <button
-        class="icon-btn"
+        class="lyrics-toggle-btn"
         :class="{ active: ui.lyricsOverlayEnabled }"
-        :title="ui.lyricsOverlayEnabled ? '关闭悬浮字幕' : '打开悬浮字幕'"
+        :title="ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '打开桌面歌词'"
         :disabled="!isDesktop"
         @click="ui.toggleLyricsOverlay()"
       >
         <AppIcon name="subtitle" :size="18" />
+        <span class="lyrics-toggle-text">
+          {{ ui.lyricsOverlayEnabled ? '关闭歌词' : '桌面歌词' }}
+        </span>
       </button>
-      <div v-if="isDesktop && ui.lyricsOverlayEnabled" class="lyrics-colors" aria-label="悬浮字幕颜色">
+      <div v-if="isDesktop && ui.lyricsOverlayEnabled" class="lyrics-colors" aria-label="桌面歌词颜色">
         <button
           v-for="color in ui.lyricsOverlayColors"
           :key="color"
           class="lyrics-color"
           :class="{ selected: color === ui.lyricsOverlayColor }"
           :style="{ backgroundColor: color }"
-          :title="`字幕颜色 ${color}`"
+          :title="`桌面歌词颜色 ${color}`"
           @click="ui.setLyricsOverlayColor(color)"
         />
       </div>
@@ -378,7 +381,8 @@ function openNowPlaying() {
 }
 
 .icon-btn.active,
-.mode-btn.active {
+.mode-btn.active,
+.lyrics-toggle-btn.active {
   color: var(--color-primary);
 }
 
@@ -388,6 +392,37 @@ function openNowPlaying() {
 
 .queue-btn.active {
   color: var(--color-primary);
+}
+
+.lyrics-toggle-btn {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.lyrics-toggle-btn:hover:not(:disabled) {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.lyrics-toggle-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.lyrics-toggle-text {
+  line-height: 1;
 }
 
 .lyrics-colors {

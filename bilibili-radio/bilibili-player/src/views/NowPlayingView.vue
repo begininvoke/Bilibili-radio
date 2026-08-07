@@ -71,6 +71,16 @@
               <AppIcon name="download" :size="16" :class="{ 'spin-slow': isDownloading }" />
               <span>{{ isDownloading ? '下载中' : '下载' }}</span>
             </button>
+            <button
+              class="detail-btn"
+              :class="{ active: ui.lyricsOverlayEnabled }"
+              :title="ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '打开桌面歌词'"
+              :disabled="!isDesktop"
+              @click="ui.toggleLyricsOverlay()"
+            >
+              <AppIcon name="subtitle" :size="16" />
+              <span>{{ ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '桌面歌词' }}</span>
+            </button>
           </div>
           <div v-if="playlistMenuOpen" class="playlist-menu">
             <button
@@ -340,6 +350,7 @@ const ui = useUiStore()
 
 const { currentTrack, videoInfo, isPlaying, isDownloading } = storeToRefs(player)
 const reducedMotion = computed(() => ui.reducedMotion)
+const isDesktop = computed(() => window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost')
 
 const track = computed<Track | null>(() => {
   if (currentTrack.value) return currentTrack.value

@@ -24,10 +24,9 @@ const player = usePlayerStore()
 const ui = useUiStore()
 const { currentTrack, videoInfo, desktopLyricText } = storeToRefs(player)
 
-let overlayWindow: import('@tauri-apps/api/webviewWindow').WebviewWindow | null = null
 let unlistenReady: (() => void) | null = null
 let unlistenClose: (() => void) | null = null
-let ensurePromise: Promise<import('@tauri-apps/api/webviewWindow').WebviewWindow | null> | null = null
+let listenersPromise: Promise<void> | null = null
 
 const trackKey = computed(() => {
   const track = currentTrack.value
@@ -75,18 +74,27 @@ onBeforeUnmount(() => {
 
 async function showLyricsWindow() {
   if (!isDesktopRuntime()) return
-  const lyricsWindow = await ensureLyricsWindow()
-  if (!lyricsWindow) return
-  await lyricsWindow.show()
-  await lyricsWindow.setAlwaysOnTop(true)
-  await lyricsWindow.setSkipTaskbar(true)
-  await publishLyricsState()
+  try {
+    await ensureLyricsListeners()
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('desktop_show_lyrics_window')
+    await publishLyricsState()
+    player.statusMessage = '悬浮字幕已打开'
+  } catch (error) {
+    ui.setLyricsOverlayEnabled(false)
+    player.statusMessage = error instanceof Error ? error.message : '悬浮字幕打开失败'
+  }
 }
 
 async function hideLyricsWindow() {
-  if (!overlayWindow) return
-  await emitLyricsPayload({ ...currentLyricsPayload(), enabled: false })
-  await overlayWindow.hide()
+  if (!isDesktopRuntime()) return
+  try {
+    await emitLyricsPayload({ ...currentLyricsPayload(), enabled: false })
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('desktop_hide_lyrics_window')
+  } catch {
+    // The overlay may already be closed by the OS; the UI switch is the source of truth.
+  }
 }
 
 async function publishLyricsState() {
@@ -105,38 +113,21 @@ function currentLyricsPayload(): LyricsPayload {
 async function emitLyricsPayload(payload: LyricsPayload) {
   if (!isDesktopRuntime()) return
   const { emitTo } = await import('@tauri-apps/api/event')
-  await emitTo(LYRICS_WINDOW_LABEL, LYRICS_UPDATE_EVENT, payload)
+  await emitTo(LYRICS_WINDOW_LABEL, LYRICS_UPDATE_EVENT, payload).catch(() => undefined)
 }
 
-async function ensureLyricsWindow() {
-  if (overlayWindow) return overlayWindow
-  if (ensurePromise) return ensurePromise
+async function ensureLyricsListeners() {
+  if (unlistenReady && unlistenClose) return
+  if (listenersPromise) return listenersPromise
 
-  ensurePromise = createOrGetLyricsWindow().finally(() => {
-    ensurePromise = null
+  listenersPromise = registerLyricsListeners().finally(() => {
+    listenersPromise = null
   })
-  return ensurePromise
+  return listenersPromise
 }
 
-async function createOrGetLyricsWindow() {
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+async function registerLyricsListeners() {
   const { listen } = await import('@tauri-apps/api/event')
-  const existing = await WebviewWindow.getByLabel(LYRICS_WINDOW_LABEL)
-  overlayWindow = existing ?? new WebviewWindow(LYRICS_WINDOW_LABEL, {
-    url: '/#/desktop-lyrics',
-    title: 'Bilibili Radio Lyrics',
-    width: 920,
-    height: 112,
-    minWidth: 520,
-    minHeight: 76,
-    decorations: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: true,
-    visible: false,
-    focus: false,
-  })
 
   if (!unlistenReady) {
     unlistenReady = await listen(LYRICS_READY_EVENT, () => {
@@ -148,8 +139,6 @@ async function createOrGetLyricsWindow() {
       ui.setLyricsOverlayEnabled(false)
     })
   }
-
-  return overlayWindow
 }
 
 function isDesktopRuntime(): boolean {

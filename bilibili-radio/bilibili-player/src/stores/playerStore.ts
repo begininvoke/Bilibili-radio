@@ -6,11 +6,14 @@ import type {
   PlayMode,
   Track,
   PlayerQueueSnapshot,
+  TrackSubtitleLine,
 } from '@/types'
 import {
   apiUrl,
+  downloadTrackToLocalFile,
   fetchPlayerQueue,
   getTrackCoverInfo,
+  getTrackSubtitles,
   getTrackStreamInfo,
   resolveTrackInput,
   savePlayerQueue,
@@ -69,6 +72,10 @@ export const usePlayerStore = defineStore('player', () => {
   const statusMessage = ref<string>('')
   const isInitialized = ref(false)
   const isDownloading = ref(false)
+  const subtitleLines = ref<TrackSubtitleLine[]>([])
+  const subtitleTrackKey = ref('')
+  const subtitleLoading = ref(false)
+  const subtitleError = ref<string | null>(null)
 
   // 播放队列
   const queue = ref<Track[]>(initialQueueSnapshot.queue)
@@ -82,6 +89,7 @@ export const usePlayerStore = defineStore('player', () => {
   let queueSaveTimer: ReturnType<typeof setTimeout> | null = null
   let queueRestored = false
   let suppressQueueRemoteSync = false
+  let subtitleSeq = 0
 
   const currentTrack = computed<Track | null>(() => {
     if (currentIndex.value < 0 || currentIndex.value >= queue.value.length) return null
@@ -99,6 +107,11 @@ export const usePlayerStore = defineStore('player', () => {
   const isLoading = computed(() => status.value === 'loading')
   const hasError = computed(() => status.value === 'error')
   const hasTrack = computed(() => currentTrack.value !== null || videoInfo.value !== null)
+  const activeSubtitleLine = computed(() => {
+    const index = findActiveSubtitleLineIndex(subtitleLines.value, currentTime.value)
+    return index >= 0 ? subtitleLines.value[index] : null
+  })
+  const desktopLyricText = computed(() => activeSubtitleLine.value?.text || '-')
 
   watch(
     [queue, currentIndex, playMode],
@@ -283,6 +296,7 @@ export const usePlayerStore = defineStore('player', () => {
     status.value = 'loading'
     statusMessage.value = '正在获取视频信息...'
     currentTime.value = 0
+    clearCurrentSubtitles()
     streamingAudioPlayer.stop()
 
     await initialize()
@@ -511,6 +525,7 @@ export const usePlayerStore = defineStore('player', () => {
     videoInfo.value = null
     duration.value = 0
     statusMessage.value = ''
+    clearCurrentSubtitles()
   }
 
   function seek(timeSeconds: number) {
@@ -549,6 +564,12 @@ export const usePlayerStore = defineStore('player', () => {
     isDownloading.value = true
     statusMessage.value = '正在下载音频...'
     try {
+      if (isDesktopRuntime()) {
+        const result = await downloadTrackToLocalFile(fallbackTrack)
+        statusMessage.value = `已保存到 ${result.path}`
+        return
+      }
+
       const streamInfo = await getTrackStreamInfo(fallbackTrack.bvid, fallbackTrack.cid)
       const response = await fetch(apiUrl(streamInfo.url))
       if (!response.ok) {
@@ -577,6 +598,76 @@ export const usePlayerStore = defineStore('player', () => {
     } finally {
       isDownloading.value = false
     }
+  }
+
+  function isDesktopRuntime(): boolean {
+    return window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost'
+  }
+
+  async function loadCurrentSubtitles(force = false) {
+    const track = currentTrack.value ?? (videoInfo.value ? videoInfoToTrack(videoInfo.value) : null)
+    if (!track?.bvid) {
+      clearCurrentSubtitles()
+      return
+    }
+
+    const key = subtitleKey(track)
+    if (!force && subtitleTrackKey.value === key && (subtitleLines.value.length > 0 || subtitleLoading.value)) {
+      return
+    }
+
+    const seq = ++subtitleSeq
+    subtitleTrackKey.value = key
+    subtitleLines.value = []
+    subtitleLoading.value = true
+    subtitleError.value = null
+
+    try {
+      const data = await getTrackSubtitles(track.bvid, track.cid)
+      if (seq !== subtitleSeq) return
+      if (track.cid != null && data.cid !== track.cid) {
+        throw new Error('subtitle cid mismatch')
+      }
+      subtitleLines.value = data.lines
+    } catch (error) {
+      if (seq !== subtitleSeq) return
+      subtitleLines.value = []
+      subtitleError.value = error instanceof Error ? error.message : 'subtitle unavailable'
+    } finally {
+      if (seq === subtitleSeq) {
+        subtitleLoading.value = false
+      }
+    }
+  }
+
+  function clearCurrentSubtitles() {
+    subtitleSeq++
+    subtitleLines.value = []
+    subtitleTrackKey.value = ''
+    subtitleLoading.value = false
+    subtitleError.value = null
+  }
+
+  function subtitleKey(track: Track): string {
+    return `${track.bvid}:${track.cid ?? ''}`
+  }
+
+  function findActiveSubtitleLineIndex(lines: TrackSubtitleLine[], playbackTime: number): number {
+    let low = 0
+    let high = lines.length - 1
+    let candidate = -1
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2)
+      if (lines[middle].from <= playbackTime) {
+        candidate = middle
+        low = middle + 1
+      } else {
+        high = middle - 1
+      }
+    }
+
+    return candidate >= 0 && playbackTime < lines[candidate].to ? candidate : -1
   }
 
   async function hydrateTrackCover(track: Track): Promise<Track> {
@@ -673,6 +764,9 @@ export const usePlayerStore = defineStore('player', () => {
     errorMessage,
     statusMessage,
     isInitialized,
+    subtitleLines,
+    subtitleLoading,
+    subtitleError,
     queue,
     currentIndex,
     playMode,
@@ -688,6 +782,8 @@ export const usePlayerStore = defineStore('player', () => {
     isLoading,
     hasError,
     hasTrack,
+    activeSubtitleLine,
+    desktopLyricText,
     initialize,
     playInput,
     playTrack,
@@ -711,5 +807,7 @@ export const usePlayerStore = defineStore('player', () => {
     disconnect,
     isDownloading,
     downloadCurrent,
+    loadCurrentSubtitles,
+    clearCurrentSubtitles,
   }
 })

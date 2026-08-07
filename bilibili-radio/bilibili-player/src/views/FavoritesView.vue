@@ -88,6 +88,12 @@
           @enqueue="player.enqueue(track)"
         />
       </div>
+      <div v-if="favoriteHasMore" class="load-more-row">
+        <button class="ghost-btn" :disabled="loadingMore" @click="loadMoreTracks">
+          <AppIcon name="repeat" :size="16" />
+          <span>{{ loadingMore ? '正在加载' : '加载更多' }}</span>
+        </button>
+      </div>
     </template>
   </div>
 </template>
@@ -125,6 +131,9 @@ const trackLoading = ref(false)
 const importing = ref(false)
 const errorMessage = ref<string | null>(null)
 const notice = ref<string | null>(null)
+const activePage = ref(1)
+const favoriteHasMore = ref(false)
+const loadingMore = ref(false)
 
 const activeFolderId = computed(() => {
   const raw = route.query.folder
@@ -147,6 +156,8 @@ watch(
     } else {
       activeFolderDetail.value = null
       activeTracks.value = []
+      activePage.value = 1
+      favoriteHasMore.value = false
     }
   },
   { immediate: true }
@@ -175,14 +186,35 @@ async function loadFolderTracks(mediaId: number) {
   if (!auth.biliConnected) return
   trackLoading.value = true
   errorMessage.value = null
+  activePage.value = 1
+  favoriteHasMore.value = false
   try {
     const result = await fetchBiliFavoriteTracks(mediaId, 1, 20)
     activeFolderDetail.value = result.folder
     activeTracks.value = result.tracks
+    favoriteHasMore.value = result.hasMore
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '收藏夹内容读取失败'
   } finally {
     trackLoading.value = false
+  }
+}
+
+async function loadMoreTracks() {
+  if (!activeFolderId.value || loadingMore.value || !favoriteHasMore.value) return
+  loadingMore.value = true
+  errorMessage.value = null
+  try {
+    const nextPage = activePage.value + 1
+    const result = await fetchBiliFavoriteTracks(activeFolderId.value, nextPage, 20)
+    activeFolderDetail.value = result.folder
+    activeTracks.value = mergeTracks(activeTracks.value, result.tracks)
+    activePage.value = nextPage
+    favoriteHasMore.value = result.hasMore
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '收藏夹继续加载失败'
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -204,6 +236,22 @@ function isCurrent(track: Track): boolean {
   if (current.trackId && track.trackId) return current.trackId === track.trackId
   if (current.cid != null && track.cid != null) return current.bvid === track.bvid && current.cid === track.cid
   return current.bvid === track.bvid
+}
+
+function mergeTracks(current: Track[], incoming: Track[]): Track[] {
+  const result = [...current]
+  for (const track of incoming) {
+    if (!result.some((item) => isSameTrack(item, track))) {
+      result.push(track)
+    }
+  }
+  return result
+}
+
+function isSameTrack(a: Track, b: Track): boolean {
+  if (a.trackId && b.trackId) return a.trackId === b.trackId
+  if (a.cid != null || b.cid != null) return a.bvid === b.bvid && a.cid != null && b.cid != null && a.cid === b.cid
+  return a.bvid === b.bvid
 }
 
 function playAll() {
@@ -442,6 +490,12 @@ async function importAsPlaylist() {
 .result-list {
   display: flex;
   flex-direction: column;
+}
+
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 4px;
 }
 
 .loading-state {

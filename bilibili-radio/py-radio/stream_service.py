@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -233,6 +234,45 @@ class StreamService:
         )
         response.call_on_close(upstream.close)
         return response
+
+    def download_audio_to_file(
+        self,
+        bvid: str,
+        cid: Optional[int],
+        quality: str,
+        target_path: Path,
+    ) -> dict[str, object]:
+        resolved_cid = cid or self.bili_client.get_video_info(bvid).cid
+        resolved_quality = quality or 'auto'
+        audio_info = self.get_audio_info(bvid, resolved_cid, resolved_quality)
+        upstream, refreshed = self._open_audio_upstream(
+            bvid=bvid,
+            cid=resolved_cid,
+            quality=resolved_quality,
+            audio_info=audio_info,
+            headers=HttpHeader.stream_headers(bvid),
+        )
+
+        bytes_written = 0
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target_path.open('wb') as output:
+                for chunk in upstream.iter_content(chunk_size=Stream.CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    output.write(chunk)
+                    bytes_written += len(chunk)
+        finally:
+            upstream.close()
+
+        return {
+            'path': str(target_path),
+            'bytes': bytes_written,
+            'bvid': normalize_bvid(bvid),
+            'cid': resolved_cid,
+            'quality': resolved_quality,
+            'refreshed': refreshed,
+        }
 
     def get_stats(self) -> dict[str, float | int | None]:
         with self._lock:

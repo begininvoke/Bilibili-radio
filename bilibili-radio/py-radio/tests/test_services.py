@@ -16,6 +16,7 @@ from library_service import LibraryService
 from models import AudioStreamInfo, Track, make_track_id
 from playback_service import PlaybackService
 from queue_service import PlayerQueueService
+from recommendation_service import RecommendationService
 from settings_service import SettingsService
 from stream_service import StreamService
 from track_service import (
@@ -347,6 +348,59 @@ class LibraryServiceTests(unittest.TestCase):
             self.service.save_review(self.track, rating=0, mood="平静")
         with self.assertRaises(APIError):
             self.service.save_review(self.track, rating=3, mood="")
+
+
+class RecommendationServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.sqlite3"
+        self.library = LibraryService(self.db_path)
+        self.service = RecommendationService(self.db_path)
+        self.high_signal = Track(bvid=VALID_BVID, cid=301, title="High Signal", owner="UP")
+        self.low_signal = Track(bvid=VALID_BVID, cid=302, title="Low Signal", owner="UP")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_reviews_and_likes_create_explainable_recommendations(self):
+        self.library.add_recent(self.low_signal, listen_ms=20_000)
+        self.library.add_recent(self.high_signal, listen_ms=20_000)
+        self.library.add_like(self.high_signal)
+        self.library.save_review(self.high_signal, rating=5, mood="治愈")
+
+        result = self.service.list_recommendations(limit=5)
+
+        self.assertEqual(result["items"][0]["track"]["trackId"], self.high_signal.track_id)
+        self.assertIn("5", result["items"][0]["reason"])
+        self.assertIn(result["items"][0]["source"], {"review", "liked", "recent_preference"})
+
+    def test_recommendation_feedback_is_persisted(self):
+        self.library.add_recent(self.high_signal, listen_ms=20_000)
+        event = self.service.record_event(
+            {
+                "trackId": self.high_signal.track_id,
+                "event": "dismissed",
+                "scene": "home",
+                "source": "liked",
+                "reason": "test",
+                "score": 10,
+            }
+        )
+
+        with get_connection(self.db_path) as conn:
+            row = conn.execute("SELECT event, scene FROM recommendation_events").fetchone()
+
+        self.assertEqual(event["event"], "dismissed")
+        self.assertEqual(row["event"], "dismissed")
+        self.assertEqual(row["scene"], "home")
+
+    def test_recent_only_candidates_are_returned_as_cold_start_fallback(self):
+        self.library.add_recent(self.low_signal, listen_ms=20_000)
+
+        result = self.service.list_recommendations(limit=5)
+
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["track"]["trackId"], self.low_signal.track_id)
 
 
 class PlayerQueueServiceTests(unittest.TestCase):
@@ -798,6 +852,19 @@ class StreamServiceTests(unittest.TestCase):
         self.assertEqual(first.url, second.url)
         self.assertEqual(client.calls, 2)
         self.assertEqual(third.quality, "high")
+
+    def test_download_audio_to_file_writes_upstream_bytes(self):
+        client = SequencedBiliClient([make_audio_info('https://primary.test/audio')])
+        session = FakeStreamSession([FakeUpstreamResponse(200, chunks=[b'abc', b'def'])])
+        service = StreamService(client, session=session)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "song.m4a"
+            result = service.download_audio_to_file(VALID_BVID, 123, "standard", target)
+
+            self.assertEqual(target.read_bytes(), b"abcdef")
+            self.assertEqual(result["bytes"], 6)
+            self.assertEqual(result["cid"], 123)
 
     def test_audio_info_single_flight_coalesces_concurrent_cache_misses(self):
         client = BlockingBiliClient()

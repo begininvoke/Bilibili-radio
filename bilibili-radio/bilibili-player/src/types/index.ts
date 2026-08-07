@@ -273,6 +273,27 @@ export interface TrackReview {
   updatedAt: string
 }
 
+export interface RecommendationItem {
+  track: Track
+  score: number
+  source: string
+  reason: string
+}
+
+export interface RecommendationsResult {
+  scene: string
+  items: RecommendationItem[]
+}
+
+export interface LocalDownloadResult {
+  path: string
+  bytes: number
+  bvid: string
+  cid?: number | null
+  quality: string
+  refreshed: boolean
+}
+
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
 /** 播放模式：顺序播放 / 列表循环 / 单曲循环 / 随机 */

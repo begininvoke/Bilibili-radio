@@ -22,8 +22,27 @@
     </section>
 
     <section class="section">
-      <SectionHeader title="为你推荐" />
-      <p class="pending-text">目前正在开发中，请您看看其他内容。</p>
+      <SectionHeader title="为你推荐" :count="recommendations.length" />
+      <div v-if="recommendationLoading" class="pending-text">正在计算推荐...</div>
+      <div v-else-if="recommendations.length" class="recommend-list">
+        <article
+          v-for="item in recommendations"
+          :key="item.track.trackId ?? `${item.track.bvid}:${item.track.cid ?? item.source}`"
+          class="recommend-row"
+        >
+          <button class="recommend-main" @click="playRecommendation(item)">
+            <img class="recommend-cover" :src="mediaUrl(item.track.cover)" :alt="item.track.title" loading="lazy" />
+            <span class="recommend-copy">
+              <strong :title="item.track.title">{{ item.track.title }}</strong>
+              <small>{{ item.reason }}</small>
+            </span>
+          </button>
+          <button class="recommend-dismiss" title="不感兴趣" @click="dismissRecommendation(item)">
+            <AppIcon name="close" :size="16" />
+          </button>
+        </article>
+      </div>
+      <p v-else class="pending-text">先播放、喜欢或评价几首歌，推荐会自动出现。</p>
     </section>
 
     <section class="section">
@@ -48,20 +67,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { mediaUrl } from '@/api/client'
+import { fetchRecommendations, mediaUrl, recordRecommendationEvent } from '@/api/client'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
-import type { Track } from '@/types'
+import type { RecommendationItem, Track } from '@/types'
 import { formatCount } from '@/utils/format'
 import TrackCard from '@/components/TrackCard.vue'
+import AppIcon from '@/components/base/AppIcon.vue'
 import SectionHeader from '@/components/base/SectionHeader.vue'
 
 const player = usePlayerStore()
 const library = useLibraryStore()
 const { recent } = storeToRefs(library)
+const recommendations = ref<RecommendationItem[]>([])
+const recommendationLoading = ref(false)
+
+onMounted(() => {
+  void loadRecommendations()
+})
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -78,6 +104,46 @@ const playCountRanking = computed(() => {
     .sort((a, b) => (b.recentPlayCount ?? 0) - (a.recentPlayCount ?? 0))
     .slice(0, 10)
 })
+
+async function loadRecommendations() {
+  recommendationLoading.value = true
+  try {
+    const result = await fetchRecommendations('home', 5)
+    recommendations.value = result.items
+  } catch {
+    recommendations.value = []
+  } finally {
+    recommendationLoading.value = false
+  }
+}
+
+function playRecommendation(item: RecommendationItem) {
+  player.playTrack(item.track)
+  void recordRecommendationEvent({
+    trackId: item.track.trackId ?? trackIdentity(item.track),
+    event: 'played',
+    scene: 'home',
+    source: item.source,
+    reason: item.reason,
+    score: item.score,
+  })
+}
+
+function dismissRecommendation(item: RecommendationItem) {
+  recommendations.value = recommendations.value.filter((candidate) => candidate !== item)
+  void recordRecommendationEvent({
+    trackId: item.track.trackId ?? trackIdentity(item.track),
+    event: 'dismissed',
+    scene: 'home',
+    source: item.source,
+    reason: item.reason,
+    score: item.score,
+  })
+}
+
+function trackIdentity(track: Track): string {
+  return `bili:${track.bvid}${track.cid != null ? `:cid:${track.cid}` : ''}`
+}
 
 function uniqueTracks(tracks: Track[]): Track[] {
   const map = new Map<string, Track>()
@@ -121,6 +187,86 @@ function uniqueTracks(tracks: Track[]): Track[] {
   font-size: 14px;
   color: var(--color-text-secondary);
   line-height: 1.7;
+}
+
+.recommend-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.recommend-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recommend-main {
+  min-width: 0;
+  height: 72px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--radius-small);
+  color: var(--color-text-primary);
+  text-align: left;
+  transition: background 160ms ease;
+}
+
+.recommend-main:hover {
+  background: var(--color-bg-hover);
+}
+
+.recommend-cover {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-small);
+  object-fit: cover;
+  background: var(--color-bg-hover);
+}
+
+.recommend-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.recommend-copy strong,
+.recommend-copy small {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.recommend-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.recommend-copy small {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.recommend-dismiss {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-small);
+  color: var(--color-text-tertiary);
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.recommend-dismiss:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
 }
 
 .rank-list {

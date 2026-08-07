@@ -307,6 +307,32 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 conn.execute('PRAGMA user_version = 5')
                 current_version = 5
 
+            if current_version < 6:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS recommendation_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        track_id TEXT NOT NULL,
+                        event TEXT NOT NULL,
+                        scene TEXT NOT NULL DEFAULT 'home',
+                        source TEXT NOT NULL DEFAULT '',
+                        reason TEXT NOT NULL DEFAULT '',
+                        score REAL NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+                        FOREIGN KEY(track_id) REFERENCES tracks(track_id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_recommendation_events_user_created
+                        ON recommendation_events (user_id, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_recommendation_events_track_event
+                        ON recommendation_events (user_id, track_id, event, created_at DESC);
+                    """
+                )
+                conn.execute('PRAGMA user_version = 6')
+                current_version = 6
+
         _initialized_paths.add(path)
 
 

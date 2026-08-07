@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 from functools import wraps
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 from uuid import uuid4
@@ -36,6 +37,7 @@ from monitoring import (
 from oidc_auth import OIDCAuth
 from playback_service import PlaybackService
 from queue_service import PlayerQueueService
+from recommendation_service import RecommendationService
 from result import Result
 from settings_service import SettingsService
 from stream_service import StreamService
@@ -123,6 +125,7 @@ auth_service = AuthService()
 library_service = LibraryService()
 playback_service = PlaybackService()
 queue_service = PlayerQueueService()
+recommendation_service = RecommendationService()
 settings_service = SettingsService()
 analysis_service = AnalysisService()
 admin_service = AdminService()
@@ -166,6 +169,14 @@ def _playback_for_request() -> PlaybackService:
 def _queue_for_request() -> PlayerQueueService:
     return _request_service(
         '_queue_service', queue_service, lambda user_id: PlayerQueueService(user_id=user_id)
+    )
+
+
+def _recommendations_for_request() -> RecommendationService:
+    return _request_service(
+        '_recommendation_service',
+        recommendation_service,
+        lambda user_id: RecommendationService(user_id=user_id),
     )
 
 
@@ -531,6 +542,28 @@ def stream_track_part(bvid: str, cid: int):
     return stream_service.proxy_stream(bvid, cid=cid, quality=quality)
 
 
+@app.post("/api/downloads/track")
+def download_track_to_local_file():
+    if not is_desktop_runtime():
+        raise APIError.validation_error("local download is only available in desktop runtime")
+    payload = _json_body()
+    bvid = str(payload.get("bvid") or "").strip()
+    if not bvid:
+        raise APIError.validation_error("bvid is required")
+    cid = payload.get("cid")
+    resolved_cid = int(cid) if cid not in (None, "") else None
+    quality = str(payload.get("quality") or _settings_for_request().get_audio_quality_preference())
+    title = str(payload.get("title") or bvid)
+    target_path = _unique_download_path(_safe_download_filename(title, "m4a"))
+    result = stream_service.download_audio_to_file(
+        normalize_bvid(bvid),
+        resolved_cid,
+        quality,
+        target_path,
+    )
+    return Result.ok(result).json()
+
+
 @app.get("/api/video/info/<bvid>")
 def get_video_info(bvid: str):
     detail = bili_client.get_video_detail(bvid)
@@ -808,6 +841,18 @@ def playback_resume(track_id: str):
     return Result.ok(_playback_for_request().get_resume(track_id)).json()
 
 
+@app.get("/api/recommendations")
+def list_recommendations():
+    scene = request.args.get("scene", "home")
+    limit = _int_arg("limit", 8)
+    return Result.ok(_recommendations_for_request().list_recommendations(scene=scene, limit=limit)).json()
+
+
+@app.post("/api/recommendations/events")
+def record_recommendation_event():
+    return Result.ok(_recommendations_for_request().record_event(_json_body())).json_with_status(202)
+
+
 @app.get("/api/auth/status")
 def auth_status():
     return Result.ok(_auth_for_request().get_status(refresh=False)).json()
@@ -1064,6 +1109,38 @@ def _stream_info_payload(bvid: str, cid: Optional[int], quality: Optional[str]) 
 
 def _absolute_url(path: str) -> str:
     return f"{request.host_url.rstrip('/')}{path}"
+
+
+def _downloads_dir() -> Path:
+    configured = os.getenv("DOWNLOADS_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    userprofile = os.getenv("USERPROFILE", "").strip()
+    if userprofile:
+        return Path(userprofile).expanduser() / "Downloads"
+    return Path.home() / "Downloads"
+
+
+def _safe_download_filename(title: str, extension: str) -> str:
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", (title or "audio").strip())
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    if not safe:
+        safe = "audio"
+    return f"{safe[:100]}.{extension.lstrip('.') or 'm4a'}"
+
+
+def _unique_download_path(filename: str) -> Path:
+    downloads_dir = _downloads_dir()
+    path = downloads_dir / filename
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for index in range(1, 1000):
+        candidate = downloads_dir / f"{stem} ({index}){suffix}"
+        if not candidate.exists():
+            return candidate
+    return downloads_dir / f"{stem}-{int(time.time())}{suffix}"
 
 
 def _proxy_image_url(image_url: str):

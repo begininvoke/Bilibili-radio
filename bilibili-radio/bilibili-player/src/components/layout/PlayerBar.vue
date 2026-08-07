@@ -82,9 +82,26 @@
     <!-- 右侧 30%：辅助操作 -->
     <div class="player-right">
       <VolumeControl />
-      <button class="icon-btn" title="字幕（暂未接入）" disabled>
+      <button
+        class="icon-btn"
+        :class="{ active: ui.lyricsOverlayEnabled }"
+        :title="ui.lyricsOverlayEnabled ? '关闭悬浮字幕' : '打开悬浮字幕'"
+        :disabled="!isDesktop"
+        @click="ui.toggleLyricsOverlay()"
+      >
         <AppIcon name="subtitle" :size="18" />
       </button>
+      <div v-if="isDesktop && ui.lyricsOverlayEnabled" class="lyrics-colors" aria-label="悬浮字幕颜色">
+        <button
+          v-for="color in ui.lyricsOverlayColors"
+          :key="color"
+          class="lyrics-color"
+          :class="{ selected: color === ui.lyricsOverlayColor }"
+          :style="{ backgroundColor: color }"
+          :title="`字幕颜色 ${color}`"
+          @click="ui.setLyricsOverlayColor(color)"
+        />
+      </div>
       <button class="icon-btn" title="画中画（暂未接入）" disabled>
         <AppIcon name="pip" :size="18" />
       </button>
@@ -144,6 +161,7 @@ const track = computed<Track | null>(() => {
 const hasQueue = computed(() => player.queue.length > 0)
 const canPlay = computed(() => track.value !== null && !isLoading.value)
 const isLiked = computed(() => (track.value ? library.isLiked(track.value.bvid) : false))
+const isDesktop = computed(() => window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost')
 
 const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
   order: { icon: 'repeat', label: '顺序播放' },
@@ -364,6 +382,30 @@ function toggleLike() {
 
 .queue-btn.active {
   color: var(--color-primary);
+}
+
+.lyrics-colors {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+}
+
+.lyrics-color {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.52);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+
+.lyrics-color.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(251, 114, 153, 0.24);
 }
 
 .queue-count {

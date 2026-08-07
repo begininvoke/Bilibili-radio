@@ -10,6 +10,8 @@ import type {
   FavoriteFolder,
   PlayerQueueSnapshot,
   Playlist,
+  LocalDownloadResult,
+  RecommendationsResult,
   Track,
   TrackChapters,
   TrackComments,
@@ -106,6 +108,15 @@ export interface FavoriteImportResult {
     pageSize: number
     maxPages: number
   }
+}
+
+export interface RecommendationEventPayload {
+  trackId: string
+  event: 'shown' | 'played' | 'accepted' | 'dismissed' | 'dislike'
+  scene?: string
+  source?: string
+  reason?: string
+  score?: number
 }
 
 export function setApiCsrfToken(token: string | null | undefined): void {
@@ -235,6 +246,19 @@ export async function getTrackStreamInfo(
     return { ...streamInfo, url: apiUrl(relativeUrl) }
   }
   return streamInfo
+}
+
+export async function downloadTrackToLocalFile(track: Track, quality = 'auto'): Promise<LocalDownloadResult> {
+  return apiRequest<LocalDownloadResult>('/api/downloads/track', {
+    method: 'POST',
+    body: JSON.stringify({
+      bvid: track.bvid,
+      cid: track.cid,
+      title: track.title,
+      quality,
+    }),
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
 export async function resetStreamStats(): Promise<void> {
@@ -437,6 +461,19 @@ export async function importBiliFavoriteAsPlaylist(
   return apiRequest<FavoriteImportResult>('/api/library/playlists/import/favorite', {
     method: 'POST',
     body: JSON.stringify({ mediaId, name, maxPages, pageSize }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+export async function fetchRecommendations(scene = 'home', limit = 8): Promise<RecommendationsResult> {
+  const params = new URLSearchParams({ scene, limit: String(limit) })
+  return apiRequest<RecommendationsResult>(`/api/recommendations?${params.toString()}`)
+}
+
+export async function recordRecommendationEvent(payload: RecommendationEventPayload): Promise<void> {
+  await apiRequest('/api/recommendations/events', {
+    method: 'POST',
+    body: JSON.stringify(payload),
     headers: { 'Content-Type': 'application/json' },
   })
 }

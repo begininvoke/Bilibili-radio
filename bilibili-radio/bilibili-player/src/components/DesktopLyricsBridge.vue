@@ -25,6 +25,7 @@ const { currentTrack, videoInfo, desktopLyricText } = storeToRefs(player)
 let unlistenReady: (() => void) | null = null
 let unlistenClose: (() => void) | null = null
 let lastPayloadKey = ''
+let publishRetryTimers: number[] = []
 
 const trackKey = computed(() => {
   const track = currentTrack.value
@@ -44,7 +45,7 @@ watch(
   (enabled) => {
     if (enabled) {
       void player.loadCurrentSubtitles()
-      void showLyricsWindow().then(() => publishLyricsState(true))
+      void showLyricsWindow().then(() => publishLyricsStateWithRetries())
     } else {
       void hideLyricsWindow()
     }
@@ -71,6 +72,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  clearPublishRetryTimers()
   void hideLyricsWindow()
   unlistenReady?.()
   unlistenClose?.()
@@ -88,6 +90,7 @@ async function showLyricsWindow() {
 
 async function hideLyricsWindow() {
   if (!isDesktopRuntime()) return
+  clearPublishRetryTimers()
   lastPayloadKey = ''
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -114,6 +117,24 @@ async function publishLyricsState(force = false) {
   } catch (error) {
     console.warn('Failed to update desktop lyrics window:', error)
   }
+}
+
+function publishLyricsStateWithRetries() {
+  clearPublishRetryTimers()
+  void publishLyricsState(true)
+  for (const delay of [120, 360, 900]) {
+    const timer = window.setTimeout(() => {
+      void publishLyricsState(true)
+    }, delay)
+    publishRetryTimers.push(timer)
+  }
+}
+
+function clearPublishRetryTimers() {
+  for (const timer of publishRetryTimers) {
+    window.clearTimeout(timer)
+  }
+  publishRetryTimers = []
 }
 
 function currentLyricsPayload(): LyricsPayload {

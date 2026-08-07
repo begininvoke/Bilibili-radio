@@ -12,11 +12,17 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    Emitter, Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 
 const DEFAULT_DESKTOP_PORT: u16 = 41517;
 const LYRICS_WINDOW_LABEL: &str = "desktop-lyrics";
 const LYRICS_UPDATE_EVENT: &str = "desktop-lyrics:update";
+const LYRICS_WINDOW_WIDTH: f64 = 920.0;
+const LYRICS_WINDOW_HEIGHT: f64 = 112.0;
+const LYRICS_WINDOW_BOTTOM_MARGIN: i32 = 96;
 
 struct BackendState {
     endpoint: Mutex<Option<String>>,
@@ -65,6 +71,7 @@ fn desktop_backend_endpoint(state: State<'_, BackendState>) -> Result<String, St
 fn show_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
     let window = ensure_lyrics_window(&app)?;
     configure_lyrics_window(&window)?;
+    position_lyrics_window(&app, &window)?;
     window.show().map_err(|error| error.to_string())
 }
 
@@ -103,6 +110,7 @@ fn set_lyrics_window_payload(
     if enabled {
         let window = ensure_lyrics_window(&app)?;
         configure_lyrics_window(&window)?;
+        position_lyrics_window(&app, &window)?;
         window.show().map_err(|error| error.to_string())?;
     }
 
@@ -152,7 +160,7 @@ fn ensure_lyrics_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String>
         WebviewUrl::App("/#/desktop-lyrics".into()),
     )
     .title("Bilibili Radio Lyrics")
-    .inner_size(920.0, 112.0)
+    .inner_size(LYRICS_WINDOW_WIDTH, LYRICS_WINDOW_HEIGHT)
     .min_inner_size(520.0, 76.0)
     .decorations(false)
     .transparent(true)
@@ -165,6 +173,7 @@ fn ensure_lyrics_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String>
     .map_err(|error| error.to_string())?;
 
     configure_lyrics_window(&window)?;
+    position_lyrics_window(app, &window)?;
     Ok(window)
 }
 
@@ -179,6 +188,22 @@ fn configure_lyrics_window(window: &WebviewWindow) -> Result<(), String> {
     // Desktop lyrics must never block the player UI or other apps.
     window
         .set_ignore_cursor_events(true)
+        .map_err(|error| error.to_string())
+}
+
+fn position_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = app.primary_monitor().map_err(|error| error.to_string())? else {
+        return Ok(());
+    };
+    let work_area = monitor.work_area();
+    let width = LYRICS_WINDOW_WIDTH.round() as i32;
+    let height = LYRICS_WINDOW_HEIGHT.round() as i32;
+    let x = work_area.position.x + ((work_area.size.width as i32 - width) / 2).max(0);
+    let y = work_area.position.y
+        + (work_area.size.height as i32 - height - LYRICS_WINDOW_BOTTOM_MARGIN).max(0);
+
+    window
+        .set_position(Position::Physical(PhysicalPosition::new(x, y)))
         .map_err(|error| error.to_string())
 }
 

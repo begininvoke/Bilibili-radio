@@ -87,7 +87,7 @@
         :class="{ active: ui.lyricsOverlayEnabled }"
         :title="ui.lyricsOverlayEnabled ? '关闭悬浮字幕' : '打开悬浮字幕'"
         :disabled="!isDesktop"
-        @click="toggleLyricsOverlay"
+        @click="ui.toggleLyricsOverlay()"
       >
         <AppIcon name="subtitle" :size="18" />
       </button>
@@ -121,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
@@ -137,12 +137,7 @@ const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
 
-const LYRICS_WINDOW_LABEL = 'desktop-lyrics'
-const LYRICS_UPDATE_EVENT = 'desktop-lyrics:update'
-const LYRICS_CLOSE_EVENT = 'desktop-lyrics:close-requested'
-
-const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading, desktopLyricText } = storeToRefs(player)
-let unlistenLyricsClose: (() => void) | null = null
+const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading } = storeToRefs(player)
 
 // 当前展示的曲目：优先队列曲目，否则回退到裸 videoInfo（直接输入播放的场景）
 const track = computed<Track | null>(() => {
@@ -167,7 +162,6 @@ const hasQueue = computed(() => player.queue.length > 0)
 const canPlay = computed(() => track.value !== null && !isLoading.value)
 const isLiked = computed(() => (track.value ? library.isLiked(track.value.bvid) : false))
 const isDesktop = computed(() => window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost')
-const trackKey = computed(() => `${track.value?.bvid ?? ''}:${track.value?.cid ?? ''}`)
 
 const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
   order: { icon: 'repeat', label: '顺序播放' },
@@ -178,94 +172,8 @@ const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
 const modeIcon = computed(() => MODE_META[player.playMode].icon)
 const modeLabel = computed(() => MODE_META[player.playMode].label)
 
-onMounted(() => {
-  if (!isDesktop.value) return
-  void registerLyricsCloseListener()
-  if (ui.lyricsOverlayEnabled) {
-    void showLyricsOverlay()
-  }
-})
-
-onBeforeUnmount(() => {
-  unlistenLyricsClose?.()
-})
-
-watch(trackKey, () => {
-  if (!ui.lyricsOverlayEnabled) return
-  void player.loadCurrentSubtitles(true)
-  void publishLyricsState()
-})
-
-watch(
-  [desktopLyricText, () => ui.lyricsOverlayColor, () => track.value?.title],
-  () => {
-    if (!ui.lyricsOverlayEnabled) return
-    void publishLyricsState()
-  }
-)
-
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
-}
-
-async function toggleLyricsOverlay() {
-  if (ui.lyricsOverlayEnabled) {
-    ui.setLyricsOverlayEnabled(false)
-    await hideLyricsOverlay()
-  } else {
-    ui.setLyricsOverlayEnabled(true)
-    await showLyricsOverlay()
-  }
-}
-
-async function showLyricsOverlay() {
-  if (!isDesktop.value) return
-  try {
-    await registerLyricsCloseListener()
-    await player.loadCurrentSubtitles()
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('desktop_show_lyrics_window')
-    await publishLyricsState()
-    player.statusMessage = '悬浮字幕已打开'
-  } catch (error) {
-    ui.setLyricsOverlayEnabled(false)
-    player.statusMessage = error instanceof Error ? error.message : '悬浮字幕打开失败'
-  }
-}
-
-async function hideLyricsOverlay() {
-  if (!isDesktop.value) return
-  try {
-    await publishLyricsPayload({ enabled: false, text: '-', color: ui.lyricsOverlayColor, title: '' })
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('desktop_hide_lyrics_window')
-  } catch {
-    // Closing is best-effort; a missing overlay window should not affect playback UI.
-  }
-}
-
-async function publishLyricsState() {
-  await publishLyricsPayload({
-    enabled: ui.lyricsOverlayEnabled,
-    text: desktopLyricText.value || '-',
-    color: ui.lyricsOverlayColor,
-    title: track.value?.title ?? '',
-  })
-}
-
-async function publishLyricsPayload(payload: { enabled: boolean; text: string; color: string; title: string }) {
-  if (!isDesktop.value) return
-  const { emitTo } = await import('@tauri-apps/api/event')
-  await emitTo(LYRICS_WINDOW_LABEL, LYRICS_UPDATE_EVENT, payload).catch(() => undefined)
-}
-
-async function registerLyricsCloseListener() {
-  if (unlistenLyricsClose) return
-  const { listen } = await import('@tauri-apps/api/event')
-  unlistenLyricsClose = await listen(LYRICS_CLOSE_EVENT, () => {
-    ui.setLyricsOverlayEnabled(false)
-    void hideLyricsOverlay()
-  })
 }
 </script>
 

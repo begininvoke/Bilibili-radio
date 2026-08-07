@@ -1,6 +1,7 @@
 <template>
   <RouterView v-if="isAuthLayout || isOverlayLayout" />
   <AppShell v-else />
+  <DesktopLyricsBridge v-if="!isAuthLayout && !isOverlayLayout && auth.appAuthenticated" />
   <Transition name="nowplaying">
     <NowPlayingView v-if="!isAuthLayout && !isOverlayLayout && ui.nowPlayingOpen" />
   </Transition>
@@ -14,6 +15,7 @@ import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useAuthStore } from '@/stores/authStore'
 import AppShell from '@/components/layout/AppShell.vue'
+import DesktopLyricsBridge from '@/components/DesktopLyricsBridge.vue'
 
 const NowPlayingView = defineAsyncComponent(() => import('@/views/NowPlayingView.vue'))
 

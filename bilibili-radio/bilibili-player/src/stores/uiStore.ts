@@ -4,7 +4,6 @@ import { ref, watch } from 'vue'
 type Theme = 'light' | 'dark'
 
 const THEME_KEY = 'bili-radio:theme'
-const LYRICS_OVERLAY_ENABLED_KEY = 'bili-radio:lyrics-overlay-enabled'
 const LYRICS_OVERLAY_COLOR_KEY = 'bili-radio:lyrics-overlay-color'
 const DEFAULT_LYRICS_OVERLAY_COLOR = '#fb7299'
 const LYRICS_OVERLAY_COLORS = ['#fb7299', '#ffffff', '#ffd166', '#66e3ff', '#8ef08e', '#c7a6ff']
@@ -23,7 +22,7 @@ export const useUiStore = defineStore('ui', () => {
   const queueOpen = ref(false)
   const nowPlayingOpen = ref(false)
   const reducedMotion = ref(detectReducedMotion())
-  const lyricsOverlayEnabled = ref(localStorage.getItem(LYRICS_OVERLAY_ENABLED_KEY) === 'true')
+  const lyricsOverlayEnabled = ref(false)
   const storedLyricsColor = localStorage.getItem(LYRICS_OVERLAY_COLOR_KEY)
   const lyricsOverlayColor = ref(
     storedLyricsColor && LYRICS_OVERLAY_COLORS.includes(storedLyricsColor)
@@ -36,10 +35,6 @@ export const useUiStore = defineStore('ui', () => {
   watch(theme, (value) => {
     applyTheme(value)
     localStorage.setItem(THEME_KEY, value)
-  })
-
-  watch(lyricsOverlayEnabled, (value) => {
-    localStorage.setItem(LYRICS_OVERLAY_ENABLED_KEY, value ? 'true' : 'false')
   })
 
   watch(lyricsOverlayColor, (value) => {

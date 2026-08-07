@@ -11,13 +11,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tauri::{Manager, State};
+use serde::Serialize;
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const DEFAULT_DESKTOP_PORT: u16 = 41517;
+const LYRICS_WINDOW_LABEL: &str = "desktop-lyrics";
+const LYRICS_UPDATE_EVENT: &str = "desktop-lyrics:update";
 
 struct BackendState {
     endpoint: Mutex<Option<String>>,
     child: Mutex<Option<Child>>,
+}
+
+#[derive(Clone, Serialize)]
+struct LyricsPayload {
+    enabled: bool,
+    text: String,
+    color: String,
+    title: String,
 }
 
 impl BackendState {
@@ -50,6 +61,54 @@ fn desktop_backend_endpoint(state: State<'_, BackendState>) -> Result<String, St
         .ok_or_else(|| "Desktop backend is not ready".to_string())
 }
 
+#[tauri::command]
+fn show_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_lyrics_window(&app)?;
+    configure_lyrics_window(&window)?;
+    window.show().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
+        emit_lyrics_payload(
+            &app,
+            LyricsPayload {
+                enabled: false,
+                text: "-".to_string(),
+                color: "#fb7299".to_string(),
+                title: String::new(),
+            },
+        )?;
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_lyrics_window_payload(
+    app: tauri::AppHandle,
+    enabled: bool,
+    text: String,
+    color: String,
+    title: String,
+) -> Result<(), String> {
+    let payload = LyricsPayload {
+        enabled,
+        text: normalized_lyrics_text(text),
+        color: normalized_lyrics_color(color),
+        title,
+    };
+
+    if enabled {
+        let window = ensure_lyrics_window(&app)?;
+        configure_lyrics_window(&window)?;
+        window.show().map_err(|error| error.to_string())?;
+    }
+
+    emit_lyrics_payload(&app, payload)
+}
+
 fn main() {
     if let Err(error) = run_app() {
         write_startup_error(&format!("{error:#}"));
@@ -73,8 +132,77 @@ fn run_app() -> tauri::Result<()> {
                 .map_err(|_| "Backend child lock is poisoned".to_string())? = Some(child);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![desktop_backend_endpoint])
+        .invoke_handler(tauri::generate_handler![
+            desktop_backend_endpoint,
+            show_lyrics_window,
+            hide_lyrics_window,
+            set_lyrics_window_payload
+        ])
         .run(tauri::generate_context!())
+}
+
+fn ensure_lyrics_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        LYRICS_WINDOW_LABEL,
+        WebviewUrl::App("/#/desktop-lyrics".into()),
+    )
+    .title("Bilibili Radio Lyrics")
+    .inner_size(920.0, 112.0)
+    .min_inner_size(520.0, 76.0)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .visible(false)
+    .focused(false)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_lyrics_window(&window)?;
+    Ok(window)
+}
+
+fn configure_lyrics_window(window: &WebviewWindow) -> Result<(), String> {
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_skip_taskbar(true)
+        .map_err(|error| error.to_string())?;
+    // Transparent always-on-top windows still receive mouse input by default on Windows.
+    // Desktop lyrics must never block the player UI or other apps.
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| error.to_string())
+}
+
+fn emit_lyrics_payload(app: &tauri::AppHandle, payload: LyricsPayload) -> Result<(), String> {
+    app.emit_to(LYRICS_WINDOW_LABEL, LYRICS_UPDATE_EVENT, payload)
+        .map_err(|error| error.to_string())
+}
+
+fn normalized_lyrics_text(text: String) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        "-".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalized_lyrics_color(color: String) -> String {
+    let trimmed = color.trim();
+    if trimmed.is_empty() {
+        "#fb7299".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn write_startup_error(message: &str) {

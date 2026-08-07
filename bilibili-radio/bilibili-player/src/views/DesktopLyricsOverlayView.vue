@@ -4,7 +4,6 @@
       <p class="lyrics-text" :style="{ color: state.color }" :title="state.title || state.text">
         {{ state.text || '-' }}
       </p>
-      <button class="close-btn" type="button" title="关闭悬浮字幕" @click="requestClose">×</button>
     </div>
   </main>
 </template>
@@ -14,7 +13,6 @@ import { onBeforeUnmount, onMounted, reactive } from 'vue'
 
 const LYRICS_UPDATE_EVENT = 'desktop-lyrics:update'
 const LYRICS_READY_EVENT = 'desktop-lyrics:ready'
-const LYRICS_CLOSE_EVENT = 'desktop-lyrics:close-requested'
 
 interface LyricsPayload {
   enabled: boolean
@@ -47,12 +45,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlistenUpdate?.()
 })
-
-async function requestClose() {
-  if (!isDesktopRuntime()) return
-  const { emit } = await import('@tauri-apps/api/event')
-  await emit(LYRICS_CLOSE_EVENT)
-}
 
 function isDesktopRuntime(): boolean {
   return window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost'
@@ -91,7 +83,7 @@ function isDesktopRuntime(): boolean {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 14px 56px;
+  padding: 14px 28px;
   border-radius: 8px;
   background: rgba(12, 12, 16, 0.24);
   -webkit-backdrop-filter: blur(12px);
@@ -115,29 +107,4 @@ function isDesktopRuntime(): boolean {
     0 0 14px rgba(0, 0, 0, 0.42);
 }
 
-.close-btn {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.28);
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 20px;
-  line-height: 1;
-  opacity: 0;
-  cursor: pointer;
-  transition: opacity 140ms ease, background 140ms ease, color 140ms ease;
-}
-
-.lyrics-shell:hover .close-btn {
-  opacity: 1;
-}
-
-.close-btn:hover {
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-}
 </style>

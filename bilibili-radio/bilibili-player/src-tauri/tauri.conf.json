@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Bilibili Radio",
+  "version": "0.1.4",
+  "identifier": "com.ourhome.bilibiliradio",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build && powershell -ExecutionPolicy Bypass -File ../deploy/build-desktop-backend.ps1",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Bilibili Radio",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      },
+      {
+        "label": "desktop-lyrics",
+        "title": "Bilibili Radio Lyrics",
+        "url": "index.html#/desktop-lyrics",
+        "width": 920,
+        "height": 112,
+        "minWidth": 520,
+        "minHeight": 76,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["../src/icon/icon.png"],
+    "resources": ["../../py-radio/dist/bilibili-radio-backend.exe"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

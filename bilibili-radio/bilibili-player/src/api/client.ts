@@ -10,6 +10,8 @@ import type {
   FavoriteFolder,
   PlayerQueueSnapshot,
   Playlist,
+  LocalDownloadResult,
+  RecommendationsResult,
   Track,
   TrackChapters,
   TrackComments,
@@ -21,6 +23,13 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 let csrfToken: string | null = null
+let runtimeApiBaseUrl: string | null = null
+
+declare global {
+  interface Window {
+    __BILIBILI_RADIO_API_BASE_URL__?: string
+  }
+}
 
 interface ApiResponse<T> {
   success: boolean
@@ -101,8 +110,33 @@ export interface FavoriteImportResult {
   }
 }
 
+export interface RecommendationEventPayload {
+  trackId: string
+  event: 'shown' | 'played' | 'accepted' | 'dismissed' | 'dislike'
+  scene?: string
+  source?: string
+  reason?: string
+  score?: number
+}
+
 export function setApiCsrfToken(token: string | null | undefined): void {
   csrfToken = token || null
+}
+
+export function configureApiBaseUrl(baseUrl: string | null | undefined): void {
+  const normalized = normalizeBaseUrl(baseUrl)
+  runtimeApiBaseUrl = normalized
+  if (normalized) {
+    window.__BILIBILI_RADIO_API_BASE_URL__ = normalized
+  } else {
+    delete window.__BILIBILI_RADIO_API_BASE_URL__
+  }
+}
+
+export function getApiBaseUrl(): string {
+  return normalizeBaseUrl(runtimeApiBaseUrl)
+    || normalizeBaseUrl(window.__BILIBILI_RADIO_API_BASE_URL__)
+    || normalizeBaseUrl(API_BASE_URL)
 }
 
 export function redirectToOidcLogin(next = currentAppLocation()): void {
@@ -112,16 +146,23 @@ export function redirectToOidcLogin(next = currentAppLocation()): void {
 
 export function apiUrl(path: string): string {
   if (/^https?:\/\//.test(path)) return path
-  return `${API_BASE_URL}${path}`
+  return `${getApiBaseUrl()}${path}`
 }
 
 export function mediaUrl(url?: string | null): string {
   const value = (url || '').trim()
   if (!value) return ''
   if (value.startsWith('data:') || value.startsWith('blob:')) return value
-  if (value.startsWith('/') && !value.startsWith('//')) return value
+  if (value.startsWith('/') && !value.startsWith('//')) {
+    return value.startsWith('/api/') ? apiUrl(value) : value
+  }
   if (!/^https?:\/\//.test(value)) return value
   return apiUrl(`/api/images/proxy?url=${encodeURIComponent(value)}`)
+}
+
+function normalizeBaseUrl(value: string | null | undefined): string {
+  const trimmed = (value || '').trim()
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
 }
 
 export class ApiError extends Error {
@@ -207,6 +248,19 @@ export async function getTrackStreamInfo(
   return streamInfo
 }
 
+export async function downloadTrackToLocalFile(track: Track, quality = 'auto'): Promise<LocalDownloadResult> {
+  return apiRequest<LocalDownloadResult>('/api/downloads/track', {
+    method: 'POST',
+    body: JSON.stringify({
+      bvid: track.bvid,
+      cid: track.cid,
+      title: track.title,
+      quality,
+    }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 export async function resetStreamStats(): Promise<void> {
   await apiRequest('/api/stream/stats/reset', { method: 'POST' })
 }
@@ -247,6 +301,15 @@ export async function addRecentTrack(track: Track): Promise<void> {
 
 export async function clearRecentTracks(): Promise<void> {
   await apiRequest('/api/library/recent', { method: 'DELETE' })
+}
+
+export async function removeRecentTrack(track: Track): Promise<void> {
+  const params = new URLSearchParams()
+  if (track.cid != null) params.set('cid', String(track.cid))
+  const query = params.toString()
+  await apiRequest(`/api/library/recent/${encodeURIComponent(track.bvid)}${query ? `?${query}` : ''}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function fetchLikes(): Promise<Track[]> {
@@ -407,6 +470,19 @@ export async function importBiliFavoriteAsPlaylist(
   return apiRequest<FavoriteImportResult>('/api/library/playlists/import/favorite', {
     method: 'POST',
     body: JSON.stringify({ mediaId, name, maxPages, pageSize }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+export async function fetchRecommendations(scene = 'home', limit = 8): Promise<RecommendationsResult> {
+  const params = new URLSearchParams({ scene, limit: String(limit) })
+  return apiRequest<RecommendationsResult>(`/api/recommendations?${params.toString()}`)
+}
+
+export async function recordRecommendationEvent(payload: RecommendationEventPayload): Promise<void> {
+  await apiRequest('/api/recommendations/events', {
+    method: 'POST',
+    body: JSON.stringify(payload),
     headers: { 'Content-Type': 'application/json' },
   })
 }

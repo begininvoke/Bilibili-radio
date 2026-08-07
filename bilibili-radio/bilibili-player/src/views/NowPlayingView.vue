@@ -71,6 +71,16 @@
               <AppIcon name="download" :size="16" :class="{ 'spin-slow': isDownloading }" />
               <span>{{ isDownloading ? '下载中' : '下载' }}</span>
             </button>
+            <button
+              class="detail-btn"
+              :class="{ active: ui.lyricsOverlayEnabled }"
+              :title="ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '打开桌面歌词'"
+              :disabled="!isDesktop"
+              @click="toggleDesktopLyrics"
+            >
+              <AppIcon name="subtitle" :size="16" />
+              <span>{{ ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '桌面歌词' }}</span>
+            </button>
           </div>
           <div v-if="playlistMenuOpen" class="playlist-menu">
             <button
@@ -334,12 +344,22 @@ import AppIcon from '@/components/base/AppIcon.vue'
 import LoadingDots from '@/components/base/LoadingDots.vue'
 import ProgressBar from '@/components/ProgressBar.vue'
 
+interface LyricsWindowDebug {
+  action: string
+  requested_enabled?: boolean | null
+  status_before?: unknown
+  status_after_show?: unknown
+  status_after?: unknown
+  steps?: unknown[]
+}
+
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
 
-const { currentTrack, videoInfo, isPlaying, isDownloading } = storeToRefs(player)
+const { currentTrack, videoInfo, isPlaying, isDownloading, desktopLyricText } = storeToRefs(player)
 const reducedMotion = computed(() => ui.reducedMotion)
+const isDesktop = computed(() => window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost')
 
 const track = computed<Track | null>(() => {
   if (currentTrack.value) return currentTrack.value
@@ -418,7 +438,32 @@ let commentsPage = 1
 
 let detailSeq = 0
 
-const reviewMoods = ['平静', '治愈', '怀旧', '兴奋', '难过', '专注', '浪漫', '压抑']
+const reviewMoods = [
+  '平静',
+  '治愈',
+  '怀旧',
+  '兴奋',
+  '难过',
+  '专注',
+  '浪漫',
+  '压抑',
+  '放松',
+  '温柔',
+  '孤独',
+  '热血',
+  '甜蜜',
+  '清醒',
+  '释然',
+  '失眠',
+  '惊艳',
+  '上头',
+  '自由',
+  '想哭',
+  '安心',
+  '破碎',
+  '空灵',
+  '厌倦',
+]
 const canSaveReview = computed(() => (
   !!track.value &&
   reviewRating.value >= 1 &&
@@ -510,6 +555,38 @@ function resetReviewForm() {
   reviewSaving.value = false
   reviewError.value = null
   reviewSavedMessage.value = ''
+}
+
+async function toggleDesktopLyrics() {
+  if (!isDesktop.value) return
+  const enabled = !ui.lyricsOverlayEnabled
+  console.info('[desktop-lyrics] now playing toggle click', { enabled })
+  ui.setLyricsOverlayEnabled(enabled)
+  if (enabled) {
+    void player.loadCurrentSubtitles()
+  }
+  await syncDesktopLyricsWindow(enabled)
+}
+
+async function syncDesktopLyricsWindow(enabled: boolean) {
+  if (!isDesktop.value) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    if (!enabled) {
+      const debug = await invoke<LyricsWindowDebug>('hide_lyrics_window')
+      console.info('[desktop-lyrics] now playing hide', debug)
+      return
+    }
+    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
+      enabled: true,
+      text: desktopLyricText.value || '-',
+      color: ui.lyricsOverlayColor,
+      title: track.value?.title ?? '',
+    })
+    console.info('[desktop-lyrics] now playing show', debug)
+  } catch (error) {
+    console.warn('Failed to toggle desktop lyrics window:', error)
+  }
 }
 
 async function loadTrackReview() {

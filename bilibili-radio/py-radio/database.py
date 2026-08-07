@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -10,7 +11,29 @@ from monitoring import record_database_operation
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+
+
+def resolve_data_dir(
+    *,
+    runtime: Optional[str] = None,
+    configured_data_dir: Optional[str] = None,
+    appdata: Optional[str] = None,
+) -> Path:
+    resolved_runtime = (runtime if runtime is not None else os.getenv("APP_RUNTIME", "")).strip().lower()
+    explicit_data_dir = (
+        configured_data_dir if configured_data_dir is not None else os.getenv("APP_DATA_DIR", "")
+    ).strip()
+    if explicit_data_dir:
+        return Path(explicit_data_dir).expanduser()
+    if resolved_runtime == "desktop":
+        appdata_root = appdata or os.getenv("APPDATA")
+        if appdata_root:
+            return Path(appdata_root).expanduser() / "Bilibili Radio" / "data"
+        return Path.home() / ".bilibili-radio" / "data"
+    return BASE_DIR / "data"
+
+
+DATA_DIR = resolve_data_dir()
 DEFAULT_DB_PATH = DATA_DIR / "bili_radio.sqlite3"
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 LEGACY_OWNER_USER_ID = "legacy-owner"
@@ -283,6 +306,32 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 )
                 conn.execute('PRAGMA user_version = 5')
                 current_version = 5
+
+            if current_version < 6:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS recommendation_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        track_id TEXT NOT NULL,
+                        event TEXT NOT NULL,
+                        scene TEXT NOT NULL DEFAULT 'home',
+                        source TEXT NOT NULL DEFAULT '',
+                        reason TEXT NOT NULL DEFAULT '',
+                        score REAL NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+                        FOREIGN KEY(track_id) REFERENCES tracks(track_id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_recommendation_events_user_created
+                        ON recommendation_events (user_id, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_recommendation_events_track_event
+                        ON recommendation_events (user_id, track_id, event, created_at DESC);
+                    """
+                )
+                conn.execute('PRAGMA user_version = 6')
+                current_version = 6
 
         _initialized_paths.add(path)
 

@@ -62,6 +62,12 @@ const router = createRouter({
       component: () => import('@/views/GenshinRoleView.vue'),
     },
     {
+      path: '/desktop-lyrics',
+      name: 'desktop-lyrics',
+      component: () => import('@/views/DesktopLyricsOverlayView.vue'),
+      meta: { layout: 'overlay', desktopOverlay: true },
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },
@@ -69,6 +75,7 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  if (to.meta.desktopOverlay) return true
   if (to.meta.sessionRecovery) return true
 
   const auth = useAuthStore()

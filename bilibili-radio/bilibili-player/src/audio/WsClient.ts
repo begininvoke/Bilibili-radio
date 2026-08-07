@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client'
+import { getApiBaseUrl } from '@/api/client'
 import type {
   VideoInfo,
   AudioDataPacket,
@@ -30,7 +31,7 @@ class WebSocketClient {
   private onProducerState: StateCallback | null = null
   private onConsumerState: StateCallback | null = null
 
-  connect(url: string = 'http://localhost:5000'): Promise<boolean> {
+  connect(url: string = import.meta.env.VITE_SOCKET_URL ?? defaultSocketUrl()): Promise<boolean> {
     return new Promise((resolve) => {
       this.socket = io(url, {
         transports: ['websocket', 'polling'],
@@ -188,6 +189,10 @@ class WebSocketClient {
       this.socket.emit('get_status')
     }
   }
+}
+
+function defaultSocketUrl(): string {
+  return getApiBaseUrl() || window.location.origin
 }
 
 export const wsClient = new WebSocketClient()

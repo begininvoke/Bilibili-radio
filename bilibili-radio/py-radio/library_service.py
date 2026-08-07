@@ -109,6 +109,48 @@ class LibraryService:
             "playbackRemoved": playback_recent.rowcount,
         }
 
+    def remove_recent(self, bvid: str, cid: Optional[int] = None) -> dict[str, Any]:
+        normalized_bvid = normalize_bvid(bvid)
+        with get_connection(self.db_path) as conn:
+            if cid is None:
+                track_ids = """
+                    SELECT track_id
+                    FROM tracks
+                    WHERE bvid = ?
+                """
+                recent = conn.execute(
+                    f"""
+                    DELETE FROM recent
+                    WHERE user_id = ?
+                      AND track_id IN ({track_ids})
+                    """,
+                    (self.user_id, normalized_bvid),
+                )
+                playback_recent = conn.execute(
+                    f"""
+                    DELETE FROM playback_recent
+                    WHERE user_id = ?
+                      AND track_id IN ({track_ids})
+                    """,
+                    (self.user_id, normalized_bvid),
+                )
+            else:
+                track_id = make_track_id(normalized_bvid, cid)
+                recent = conn.execute(
+                    "DELETE FROM recent WHERE user_id = ? AND track_id = ?",
+                    (self.user_id, track_id),
+                )
+                playback_recent = conn.execute(
+                    "DELETE FROM playback_recent WHERE user_id = ? AND track_id = ?",
+                    (self.user_id, track_id),
+                )
+        return {
+            "bvid": normalized_bvid,
+            "cid": cid,
+            "removed": recent.rowcount,
+            "playbackRemoved": playback_recent.rowcount,
+        }
+
     def add_recent(
         self,
         track: Track,

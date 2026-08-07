@@ -20,9 +20,11 @@
         :is-current="isCurrent(t)"
         :is-playing="isPlaying && isCurrent(t)"
         :is-liked="library.isLiked(t.bvid)"
+        removable
         @play="player.playTrack(t)"
         @like="library.toggleLike(t)"
         @enqueue="player.enqueue(t)"
+        @remove="library.removeRecent(t)"
       />
     </div>
     <EmptyState

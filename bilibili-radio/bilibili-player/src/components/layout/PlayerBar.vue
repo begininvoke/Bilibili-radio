@@ -3,7 +3,7 @@
     <!-- 左侧 30%：当前内容 -->
     <div class="player-left">
       <template v-if="track">
-        <div class="mini-cover" @click="ui.openNowPlaying()">
+        <div class="mini-cover" @click.stop="openNowPlaying">
           <img v-if="track.cover" :src="mediaUrl(track.cover)" :alt="track.title" />
           <div v-else class="cover-fallback">
             <AppIcon name="disc" :size="22" />
@@ -13,7 +13,9 @@
           </div>
         </div>
         <div class="track-meta">
-          <div class="meta-title" :title="track.title">{{ track.title }}</div>
+          <button class="meta-title meta-title-button" type="button" :title="track.title" @click.stop="openNowPlaying">
+            {{ track.title }}
+          </button>
           <div class="meta-owner" :title="track.owner">{{ track.owner }}</div>
         </div>
         <button
@@ -82,9 +84,29 @@
     <!-- 右侧 30%：辅助操作 -->
     <div class="player-right">
       <VolumeControl />
-      <button class="icon-btn" title="字幕（暂未接入）" disabled>
+      <button
+        class="lyrics-toggle-btn"
+        :class="{ active: ui.lyricsOverlayEnabled }"
+        :title="ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '打开桌面歌词'"
+        :disabled="!isDesktop"
+        @click="toggleDesktopLyrics"
+      >
         <AppIcon name="subtitle" :size="18" />
+        <span class="lyrics-toggle-text">
+          {{ ui.lyricsOverlayEnabled ? '关闭歌词' : '桌面歌词' }}
+        </span>
       </button>
+      <div v-if="isDesktop && ui.lyricsOverlayEnabled" class="lyrics-colors" aria-label="桌面歌词颜色">
+        <button
+          v-for="color in ui.lyricsOverlayColors"
+          :key="color"
+          class="lyrics-color"
+          :class="{ selected: color === ui.lyricsOverlayColor }"
+          :style="{ backgroundColor: color }"
+          :title="`桌面歌词颜色 ${color}`"
+          @click="setDesktopLyricsColor(color)"
+        />
+      </div>
       <button class="icon-btn" title="画中画（暂未接入）" disabled>
         <AppIcon name="pip" :size="18" />
       </button>
@@ -96,7 +118,7 @@
       >
         <AppIcon name="download" :size="18" :class="{ 'spin-slow': isDownloading }" />
       </button>
-      <button class="icon-btn" title="打开播放详情" :disabled="!track" @click="ui.openNowPlaying()">
+      <button class="icon-btn" title="打开播放详情" :disabled="!canOpenNowPlaying" @click.stop="openNowPlaying">
         <AppIcon name="fullscreen" :size="18" />
       </button>
     </div>
@@ -116,11 +138,21 @@ import LoadingDots from '@/components/base/LoadingDots.vue'
 import ProgressBar from '@/components/ProgressBar.vue'
 import VolumeControl from '@/components/VolumeControl.vue'
 
+interface LyricsWindowDebug {
+  action: string
+  requested_enabled?: boolean | null
+  status_before?: unknown
+  status_after_show?: unknown
+  status_after?: unknown
+  steps?: unknown[]
+}
+
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
 
-const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading } = storeToRefs(player)
+const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading, desktopLyricText } =
+  storeToRefs(player)
 
 // 当前展示的曲目：优先队列曲目，否则回退到裸 videoInfo（直接输入播放的场景）
 const track = computed<Track | null>(() => {
@@ -143,7 +175,9 @@ const track = computed<Track | null>(() => {
 
 const hasQueue = computed(() => player.queue.length > 0)
 const canPlay = computed(() => track.value !== null && !isLoading.value)
+const canOpenNowPlaying = computed(() => player.hasTrack)
 const isLiked = computed(() => (track.value ? library.isLiked(track.value.bvid) : false))
+const isDesktop = computed(() => window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost')
 
 const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
   order: { icon: 'repeat', label: '顺序播放' },
@@ -156,6 +190,50 @@ const modeLabel = computed(() => MODE_META[player.playMode].label)
 
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
+}
+
+function openNowPlaying() {
+  if (!player.hasTrack) return
+  ui.openNowPlaying()
+}
+
+async function toggleDesktopLyrics() {
+  if (!isDesktop.value) return
+  const enabled = !ui.lyricsOverlayEnabled
+  console.info('[desktop-lyrics] player bar toggle click', { enabled })
+  ui.setLyricsOverlayEnabled(enabled)
+  if (enabled) {
+    void player.loadCurrentSubtitles()
+  }
+  await syncDesktopLyricsWindow(enabled)
+}
+
+async function setDesktopLyricsColor(color: string) {
+  ui.setLyricsOverlayColor(color)
+  if (ui.lyricsOverlayEnabled) {
+    await syncDesktopLyricsWindow(true)
+  }
+}
+
+async function syncDesktopLyricsWindow(enabled: boolean) {
+  if (!isDesktop.value) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    if (!enabled) {
+      const debug = await invoke<LyricsWindowDebug>('hide_lyrics_window')
+      console.info('[desktop-lyrics] player bar hide', debug)
+      return
+    }
+    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
+      enabled: true,
+      text: desktopLyricText.value || '-',
+      color: ui.lyricsOverlayColor,
+      title: track.value?.title ?? '',
+    })
+    console.info('[desktop-lyrics] player bar show', debug)
+  } catch (error) {
+    console.warn('Failed to toggle desktop lyrics window:', error)
+  }
 }
 </script>
 
@@ -245,6 +323,20 @@ function toggleLike() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.meta-title-button {
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.meta-title-button:hover {
+  color: var(--color-primary);
 }
 
 .meta-title.muted {
@@ -354,7 +446,8 @@ function toggleLike() {
 }
 
 .icon-btn.active,
-.mode-btn.active {
+.mode-btn.active,
+.lyrics-toggle-btn.active {
   color: var(--color-primary);
 }
 
@@ -364,6 +457,61 @@ function toggleLike() {
 
 .queue-btn.active {
   color: var(--color-primary);
+}
+
+.lyrics-toggle-btn {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.lyrics-toggle-btn:hover:not(:disabled) {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.lyrics-toggle-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.lyrics-toggle-text {
+  line-height: 1;
+}
+
+.lyrics-colors {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+}
+
+.lyrics-color {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.52);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+
+.lyrics-color.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(251, 114, 153, 0.24);
 }
 
 .queue-count {

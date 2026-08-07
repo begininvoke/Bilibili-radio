@@ -2,6 +2,9 @@
   <div class="track-card" @click="$emit('play')">
     <div class="cover-wrap">
       <img class="cover" :src="mediaUrl(track.cover)" :alt="track.title" loading="lazy" />
+      <button v-if="removable" class="remove-btn" title="删除" @click.stop="$emit('remove')">
+        <AppIcon name="close" :size="15" />
+      </button>
       <button class="play-fab" title="播放" @click.stop="$emit('play')">
         <AppIcon name="play" :size="20" />
       </button>
@@ -18,8 +21,10 @@ import { mediaUrl } from '@/api/client'
 import { formatDuration } from '@/utils/format'
 import AppIcon from '@/components/base/AppIcon.vue'
 
-defineProps<{ track: Track }>()
-defineEmits<{ play: [] }>()
+withDefaults(defineProps<{ track: Track; removable?: boolean }>(), {
+  removable: false,
+})
+defineEmits<{ play: []; remove: [] }>()
 </script>
 
 <style scoped>
@@ -44,6 +49,33 @@ defineEmits<{ play: [] }>()
 
 .track-card:hover .cover {
   transform: scale(1.04);
+}
+
+.remove-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.54);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+
+.track-card:hover .remove-btn,
+.remove-btn:focus-visible {
+  opacity: 1;
+}
+
+.remove-btn:hover {
+  background: rgba(251, 114, 153, 0.92);
 }
 
 .play-fab {

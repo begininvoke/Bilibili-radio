@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 from functools import wraps
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 from uuid import uuid4
@@ -36,6 +37,7 @@ from monitoring import (
 from oidc_auth import OIDCAuth
 from playback_service import PlaybackService
 from queue_service import PlayerQueueService
+from recommendation_service import RecommendationService
 from result import Result
 from settings_service import SettingsService
 from stream_service import StreamService
@@ -83,6 +85,28 @@ if cors_origins:
         expose_headers=['X-Request-ID', 'Server-Timing'],
     )
 
+DESKTOP_CORS_EXACT_ORIGINS = {
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'tauri://localhost',
+}
+DESKTOP_CORS_LOCAL_ORIGIN_RE = re.compile(r'^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$')
+
+
+@app.after_request
+def apply_desktop_cors(response):
+    if os.getenv('APP_RUNTIME', '').strip().lower() != 'desktop':
+        return response
+
+    origin = request.headers.get('Origin', '').strip()
+    if origin in DESKTOP_CORS_EXACT_ORIGINS or DESKTOP_CORS_LOCAL_ORIGIN_RE.match(origin):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+        response.headers.add('Vary', 'Origin')
+    return response
+
 init_db()
 identity_service = IdentityService()
 oidc_auth = OIDCAuth(app, identity_service)
@@ -101,6 +125,7 @@ auth_service = AuthService()
 library_service = LibraryService()
 playback_service = PlaybackService()
 queue_service = PlayerQueueService()
+recommendation_service = RecommendationService()
 settings_service = SettingsService()
 analysis_service = AnalysisService()
 admin_service = AdminService()
@@ -147,6 +172,14 @@ def _queue_for_request() -> PlayerQueueService:
     )
 
 
+def _recommendations_for_request() -> RecommendationService:
+    return _request_service(
+        '_recommendation_service',
+        recommendation_service,
+        lambda user_id: RecommendationService(user_id=user_id),
+    )
+
+
 def _settings_for_request() -> SettingsService:
     return _request_service(
         '_settings_service', settings_service, lambda user_id: SettingsService(user_id=user_id)
@@ -189,6 +222,45 @@ def _close_runtime_clients() -> None:
 
 
 atexit.register(_close_runtime_clients)
+
+
+def is_desktop_runtime() -> bool:
+    return os.getenv('APP_RUNTIME', '').strip().lower() == 'desktop'
+
+
+def resolve_bind_host(*, auth_enabled: bool = oidc_auth.enabled) -> str:
+    configured_host = os.getenv('APP_BIND_HOST') or os.getenv('APP_DEV_HOST')
+    if configured_host:
+        return configured_host.strip()
+    if is_desktop_runtime():
+        return '127.0.0.1'
+    return '127.0.0.1' if not auth_enabled else Server.HOST
+
+
+def resolve_bind_port() -> int:
+    configured_port = os.getenv('APP_BIND_PORT') or os.getenv('PORT')
+    if not configured_port:
+        return Server.PORT
+    try:
+        port = int(configured_port)
+    except ValueError as exc:
+        raise RuntimeError('APP_BIND_PORT must be an integer') from exc
+    if port < 1 or port > 65535:
+        raise RuntimeError('APP_BIND_PORT must be between 1 and 65535')
+    return port
+
+
+def enforce_loopback_binding(host: str, *, auth_enabled: bool = oidc_auth.enabled) -> None:
+    if (
+        not auth_enabled
+        and host not in {'127.0.0.1', '::1', 'localhost'}
+        and os.getenv('ALLOW_INSECURE_LOCAL_AUTH', '').strip().lower()
+        not in {'1', 'true', 'yes', 'on'}
+    ):
+        raise RuntimeError(
+            'AUTH_MODE=disabled may only bind to loopback; set '
+            'ALLOW_INSECURE_LOCAL_AUTH=1 to acknowledge the risk'
+        )
 
 
 @app.teardown_request
@@ -470,6 +542,28 @@ def stream_track_part(bvid: str, cid: int):
     return stream_service.proxy_stream(bvid, cid=cid, quality=quality)
 
 
+@app.post("/api/downloads/track")
+def download_track_to_local_file():
+    if not is_desktop_runtime():
+        raise APIError.validation_error("local download is only available in desktop runtime")
+    payload = _json_body()
+    bvid = str(payload.get("bvid") or "").strip()
+    if not bvid:
+        raise APIError.validation_error("bvid is required")
+    cid = payload.get("cid")
+    resolved_cid = int(cid) if cid not in (None, "") else None
+    quality = str(payload.get("quality") or _settings_for_request().get_audio_quality_preference())
+    title = str(payload.get("title") or bvid)
+    target_path = _unique_download_path(_safe_download_filename(title, "m4a"))
+    result = stream_service.download_audio_to_file(
+        normalize_bvid(bvid),
+        resolved_cid,
+        quality,
+        target_path,
+    )
+    return Result.ok(result).json()
+
+
 @app.get("/api/video/info/<bvid>")
 def get_video_info(bvid: str):
     detail = bili_client.get_video_detail(bvid)
@@ -538,6 +632,12 @@ def list_recent():
 @app.delete("/api/library/recent")
 def clear_recent():
     return Result.ok(_library_for_request().clear_recent()).json()
+
+
+@app.delete("/api/library/recent/<bvid>")
+def remove_recent(bvid: str):
+    cid = request.args.get("cid", type=int)
+    return Result.ok(_library_for_request().remove_recent(bvid, cid=cid)).json()
 
 
 @app.post("/api/library/recent")
@@ -745,6 +845,18 @@ def playback_recent():
 @app.get("/api/playback/resume/<path:track_id>")
 def playback_resume(track_id: str):
     return Result.ok(_playback_for_request().get_resume(track_id)).json()
+
+
+@app.get("/api/recommendations")
+def list_recommendations():
+    scene = request.args.get("scene", "home")
+    limit = _int_arg("limit", 8)
+    return Result.ok(_recommendations_for_request().list_recommendations(scene=scene, limit=limit)).json()
+
+
+@app.post("/api/recommendations/events")
+def record_recommendation_event():
+    return Result.ok(_recommendations_for_request().record_event(_json_body())).json_with_status(202)
 
 
 @app.get("/api/auth/status")
@@ -1005,6 +1117,38 @@ def _absolute_url(path: str) -> str:
     return f"{request.host_url.rstrip('/')}{path}"
 
 
+def _downloads_dir() -> Path:
+    configured = os.getenv("DOWNLOADS_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    userprofile = os.getenv("USERPROFILE", "").strip()
+    if userprofile:
+        return Path(userprofile).expanduser() / "Downloads"
+    return Path.home() / "Downloads"
+
+
+def _safe_download_filename(title: str, extension: str) -> str:
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", (title or "audio").strip())
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    if not safe:
+        safe = "audio"
+    return f"{safe[:100]}.{extension.lstrip('.') or 'm4a'}"
+
+
+def _unique_download_path(filename: str) -> Path:
+    downloads_dir = _downloads_dir()
+    path = downloads_dir / filename
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for index in range(1, 1000):
+        candidate = downloads_dir / f"{stem} ({index}){suffix}"
+        if not candidate.exists():
+            return candidate
+    return downloads_dir / f"{stem}-{int(time.time())}{suffix}"
+
+
 def _proxy_image_url(image_url: str):
     _validate_image_url(image_url)
 
@@ -1127,28 +1271,17 @@ def _is_allowed_image_host(hostname: str) -> bool:
 
 
 if __name__ == "__main__":
+    bind_host = resolve_bind_host()
+    bind_port = resolve_bind_port()
     print("=" * 60)
     print("Bilibili Radio backend")
     print("=" * 60)
-    print(f"Development HTTP server: http://localhost:{Server.PORT}")
+    print(f"HTTP server: http://{bind_host}:{bind_port}")
     print("=" * 60)
-    development_host = os.getenv(
-        'APP_DEV_HOST',
-        '127.0.0.1' if not oidc_auth.enabled else Server.HOST,
-    ).strip()
-    if (
-        not oidc_auth.enabled
-        and development_host not in {'127.0.0.1', '::1', 'localhost'}
-        and os.getenv('ALLOW_INSECURE_LOCAL_AUTH', '').strip().lower()
-        not in {'1', 'true', 'yes', 'on'}
-    ):
-        raise RuntimeError(
-            'AUTH_MODE=disabled may only bind to loopback; set '
-            'ALLOW_INSECURE_LOCAL_AUTH=1 to acknowledge the risk'
-        )
+    enforce_loopback_binding(bind_host)
     app.run(
-        host=development_host,
-        port=Server.PORT,
+        host=bind_host,
+        port=bind_port,
         debug=Server.DEBUG,
         threaded=True,
     )

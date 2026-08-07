@@ -1,21 +1,22 @@
 <template>
-  <RouterView v-if="isAuthLayout" />
+  <RouterView v-if="isAuthLayout || isOverlayLayout" />
   <AppShell v-else />
+  <DesktopLyricsBridge v-if="!isAuthLayout && !isOverlayLayout" />
   <Transition name="nowplaying">
-    <NowPlayingView v-if="!isAuthLayout && ui.nowPlayingOpen" />
+    <NowPlayingView v-if="!isAuthLayout && !isOverlayLayout && ui.nowPlayingOpen" />
   </Transition>
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useAuthStore } from '@/stores/authStore'
 import AppShell from '@/components/layout/AppShell.vue'
-
-const NowPlayingView = defineAsyncComponent(() => import('@/views/NowPlayingView.vue'))
+import DesktopLyricsBridge from '@/components/DesktopLyricsBridge.vue'
+import NowPlayingView from '@/views/NowPlayingView.vue'
 
 const route = useRoute()
 const player = usePlayerStore()
@@ -24,15 +25,16 @@ const ui = useUiStore()
 const auth = useAuthStore()
 
 const isAuthLayout = computed(() => route.meta.layout === 'auth')
+const isOverlayLayout = computed(() => route.meta.layout === 'overlay')
 
 watch(
-  [isAuthLayout, () => auth.appAuthenticated],
+  [isAuthLayout, isOverlayLayout, () => auth.appAuthenticated],
   () => initializeAppServices(),
   { immediate: true }
 )
 
 function initializeAppServices() {
-  if (isAuthLayout.value || !auth.appAuthenticated) return
+  if (isAuthLayout.value || isOverlayLayout.value || !auth.appAuthenticated) return
   void auth.initializeBili()
   void library.initialize()
   void player.initialize()

@@ -11,10 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, State};
 
 const DEFAULT_DESKTOP_PORT: u16 = 41517;
-const LYRICS_WINDOW_LABEL: &str = "desktop-lyrics";
 
 struct BackendState {
     endpoint: Mutex<Option<String>>,
@@ -51,48 +50,6 @@ fn desktop_backend_endpoint(state: State<'_, BackendState>) -> Result<String, St
         .ok_or_else(|| "Desktop backend is not ready".to_string())
 }
 
-#[tauri::command]
-fn desktop_show_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
-    let window = match app.get_webview_window(LYRICS_WINDOW_LABEL) {
-        Some(window) => window,
-        None => WebviewWindowBuilder::new(
-            &app,
-            LYRICS_WINDOW_LABEL,
-            WebviewUrl::App("index.html#/desktop-lyrics".into()),
-        )
-        .title("Bilibili Radio Lyrics")
-        .inner_size(920.0, 112.0)
-        .min_inner_size(520.0, 76.0)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(true)
-        .focused(false)
-        .visible(false)
-        .center()
-        .build()
-        .map_err(|error| error.to_string())?,
-    };
-
-    window.show().map_err(|error| error.to_string())?;
-    window
-        .set_always_on_top(true)
-        .map_err(|error| error.to_string())?;
-    window
-        .set_skip_taskbar(true)
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn desktop_hide_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
-        window.hide().map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
 fn main() {
     if let Err(error) = run_app() {
         write_startup_error(&format!("{error:#}"));
@@ -116,11 +73,7 @@ fn run_app() -> tauri::Result<()> {
                 .map_err(|_| "Backend child lock is poisoned".to_string())? = Some(child);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            desktop_backend_endpoint,
-            desktop_show_lyrics_window,
-            desktop_hide_lyrics_window
-        ])
+        .invoke_handler(tauri::generate_handler![desktop_backend_endpoint])
         .run(tauri::generate_context!())
 }
 

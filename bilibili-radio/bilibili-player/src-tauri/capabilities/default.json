@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for Bilibili Radio desktop windows",
   "windows": ["main", "desktop-lyrics"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:webview:allow-create-webview-window"]
 }

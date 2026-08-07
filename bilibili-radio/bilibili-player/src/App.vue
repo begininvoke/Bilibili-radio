@@ -1,9 +1,7 @@
 <template>
   <RouterView v-if="isAuthLayout || isOverlayLayout" />
   <AppShell v-else />
-  <DesktopLyricsBridge
-    v-if="!isAuthLayout && !isOverlayLayout && auth.appAuthenticated && ui.lyricsOverlayEnabled"
-  />
+  <DesktopLyricsBridge v-if="!isAuthLayout && !isOverlayLayout && ui.lyricsOverlayEnabled" />
   <Transition name="nowplaying">
     <NowPlayingView v-if="!isAuthLayout && !isOverlayLayout && ui.nowPlayingOpen" />
   </Transition>

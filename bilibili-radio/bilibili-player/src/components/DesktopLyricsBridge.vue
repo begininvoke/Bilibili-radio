@@ -79,10 +79,16 @@ onBeforeUnmount(() => {
 })
 
 async function showLyricsWindow() {
-  if (!isDesktopRuntime()) return
+  if (!isDesktopRuntime() || !ui.lyricsOverlayEnabled) return
+  const payload = currentLyricsPayload()
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('show_lyrics_window')
+    await invoke('set_lyrics_window_payload', {
+      enabled: payload.enabled,
+      text: payload.text,
+      color: payload.color,
+      title: payload.title,
+    })
   } catch (error) {
     console.warn('Failed to show desktop lyrics window:', error)
   }

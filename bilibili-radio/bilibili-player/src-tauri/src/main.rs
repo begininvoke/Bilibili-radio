@@ -27,6 +27,7 @@ const LYRICS_WINDOW_BOTTOM_MARGIN: i32 = 96;
 struct BackendState {
     endpoint: Mutex<Option<String>>,
     child: Mutex<Option<Child>>,
+    lyrics_payload: Mutex<LyricsPayload>,
 }
 
 #[derive(Clone, Serialize)]
@@ -42,6 +43,7 @@ impl BackendState {
         Self {
             endpoint: Mutex::new(None),
             child: Mutex::new(None),
+            lyrics_payload: Mutex::new(default_lyrics_payload()),
         }
     }
 }
@@ -68,25 +70,26 @@ fn desktop_backend_endpoint(state: State<'_, BackendState>) -> Result<String, St
 }
 
 #[tauri::command]
-fn show_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
+fn show_lyrics_window(app: tauri::AppHandle, state: State<'_, BackendState>) -> Result<(), String> {
     let window = ensure_lyrics_window(&app)?;
-    configure_lyrics_window(&window)?;
-    position_lyrics_window(&app, &window)?;
-    window.show().map_err(|error| error.to_string())
+    reveal_lyrics_window(&app, &window)?;
+    let payload = state
+        .lyrics_payload
+        .lock()
+        .map_err(|_| "Lyrics payload lock is poisoned".to_string())?
+        .clone();
+    emit_lyrics_payload(&app, payload)
 }
 
 #[tauri::command]
-fn hide_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
+fn hide_lyrics_window(app: tauri::AppHandle, state: State<'_, BackendState>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
-        emit_lyrics_payload(
-            &app,
-            LyricsPayload {
-                enabled: false,
-                text: "-".to_string(),
-                color: "#fb7299".to_string(),
-                title: String::new(),
-            },
-        )?;
+        let payload = default_lyrics_payload();
+        *state
+            .lyrics_payload
+            .lock()
+            .map_err(|_| "Lyrics payload lock is poisoned".to_string())? = payload.clone();
+        emit_lyrics_payload(&app, payload)?;
         window.hide().map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -95,6 +98,7 @@ fn hide_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn set_lyrics_window_payload(
     app: tauri::AppHandle,
+    state: State<'_, BackendState>,
     enabled: bool,
     text: String,
     color: String,
@@ -106,15 +110,26 @@ fn set_lyrics_window_payload(
         color: normalized_lyrics_color(color),
         title,
     };
+    *state
+        .lyrics_payload
+        .lock()
+        .map_err(|_| "Lyrics payload lock is poisoned".to_string())? = payload.clone();
 
     if enabled {
         let window = ensure_lyrics_window(&app)?;
-        configure_lyrics_window(&window)?;
-        position_lyrics_window(&app, &window)?;
-        window.show().map_err(|error| error.to_string())?;
+        reveal_lyrics_window(&app, &window)?;
     }
 
     emit_lyrics_payload(&app, payload)
+}
+
+#[tauri::command]
+fn current_lyrics_window_payload(state: State<'_, BackendState>) -> Result<LyricsPayload, String> {
+    state
+        .lyrics_payload
+        .lock()
+        .map_err(|_| "Lyrics payload lock is poisoned".to_string())
+        .map(|payload| payload.clone())
 }
 
 fn main() {
@@ -144,7 +159,8 @@ fn run_app() -> tauri::Result<()> {
             desktop_backend_endpoint,
             show_lyrics_window,
             hide_lyrics_window,
-            set_lyrics_window_payload
+            set_lyrics_window_payload,
+            current_lyrics_window_payload
         ])
         .run(tauri::generate_context!())
 }
@@ -184,11 +200,8 @@ fn configure_lyrics_window(window: &WebviewWindow) -> Result<(), String> {
     window
         .set_skip_taskbar(true)
         .map_err(|error| error.to_string())?;
-    // Transparent always-on-top windows still receive mouse input by default on Windows.
-    // Desktop lyrics must never block the player UI or other apps.
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|error| error.to_string())
+    let _ = window.set_visible_on_all_workspaces(true);
+    Ok(())
 }
 
 fn position_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
@@ -204,6 +217,21 @@ fn position_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Res
 
     window
         .set_position(Position::Physical(PhysicalPosition::new(x, y)))
+        .map_err(|error| error.to_string())
+}
+
+fn reveal_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    configure_lyrics_window(window)?;
+    position_lyrics_window(app, window)?;
+    let _ = window.unminimize();
+    window.show().map_err(|error| error.to_string())?;
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    // Transparent always-on-top windows still receive mouse input by default on Windows.
+    // Desktop lyrics must never block the player UI or other apps.
+    window
+        .set_ignore_cursor_events(true)
         .map_err(|error| error.to_string())
 }
 
@@ -227,6 +255,15 @@ fn normalized_lyrics_color(color: String) -> String {
         "#fb7299".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn default_lyrics_payload() -> LyricsPayload {
+    LyricsPayload {
+        enabled: false,
+        text: "-".to_string(),
+        color: "#fb7299".to_string(),
+        title: String::new(),
     }
 }
 

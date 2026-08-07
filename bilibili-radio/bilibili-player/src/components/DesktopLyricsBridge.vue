@@ -9,7 +9,6 @@ import { usePlayerStore } from '@/stores/playerStore'
 import { useUiStore } from '@/stores/uiStore'
 
 const LYRICS_READY_EVENT = 'desktop-lyrics:ready'
-const LYRICS_CLOSE_EVENT = 'desktop-lyrics:close-requested'
 
 interface LyricsPayload {
   enabled: boolean
@@ -18,12 +17,20 @@ interface LyricsPayload {
   title: string
 }
 
+interface LyricsWindowDebug {
+  action: string
+  requested_enabled?: boolean | null
+  status_before?: unknown
+  status_after_show?: unknown
+  status_after?: unknown
+  steps?: unknown[]
+}
+
 const player = usePlayerStore()
 const ui = useUiStore()
 const { currentTrack, videoInfo, desktopLyricText } = storeToRefs(player)
 
 let unlistenReady: (() => void) | null = null
-let unlistenClose: (() => void) | null = null
 let lastPayloadKey = ''
 let publishRetryTimers: number[] = []
 
@@ -42,11 +49,11 @@ onMounted(() => {
 
 watch(
   () => ui.lyricsOverlayEnabled,
-  (enabled) => {
+  (enabled, previousEnabled) => {
     if (enabled) {
       void player.loadCurrentSubtitles()
       void showLyricsWindow().then(() => publishLyricsStateWithRetries())
-    } else {
+    } else if (previousEnabled === true) {
       void hideLyricsWindow()
     }
   },
@@ -75,7 +82,6 @@ onBeforeUnmount(() => {
   clearPublishRetryTimers()
   void hideLyricsWindow()
   unlistenReady?.()
-  unlistenClose?.()
 })
 
 async function showLyricsWindow() {
@@ -83,12 +89,13 @@ async function showLyricsWindow() {
   const payload = currentLyricsPayload()
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('set_lyrics_window_payload', {
+    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
       enabled: payload.enabled,
       text: payload.text,
       color: payload.color,
       title: payload.title,
     })
+    console.info('[desktop-lyrics] bridge show', debug)
   } catch (error) {
     console.warn('Failed to show desktop lyrics window:', error)
   }
@@ -100,7 +107,8 @@ async function hideLyricsWindow() {
   lastPayloadKey = ''
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('hide_lyrics_window')
+    const debug = await invoke<LyricsWindowDebug>('hide_lyrics_window')
+    console.info('[desktop-lyrics] bridge hide', debug)
   } catch (error) {
     console.warn('Failed to hide desktop lyrics window:', error)
   }
@@ -114,12 +122,13 @@ async function publishLyricsState(force = false) {
   lastPayloadKey = payloadKey
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('set_lyrics_window_payload', {
+    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
       enabled: payload.enabled,
       text: payload.text,
       color: payload.color,
       title: payload.title,
     })
+    console.info('[desktop-lyrics] bridge payload', debug)
   } catch (error) {
     console.warn('Failed to update desktop lyrics window:', error)
   }
@@ -153,16 +162,11 @@ function currentLyricsPayload(): LyricsPayload {
 }
 
 async function bindLyricsWindowEvents() {
-  if (unlistenReady && unlistenClose) return
+  if (unlistenReady) return
   const { listen } = await import('@tauri-apps/api/event')
   if (!unlistenReady) {
     unlistenReady = await listen(LYRICS_READY_EVENT, () => {
       void publishLyricsState(true)
-    })
-  }
-  if (!unlistenClose) {
-    unlistenClose = await listen(LYRICS_CLOSE_EVENT, () => {
-      ui.setLyricsOverlayEnabled(false)
     })
   }
 }

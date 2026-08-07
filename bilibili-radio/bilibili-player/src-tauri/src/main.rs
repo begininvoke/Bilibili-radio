@@ -8,14 +8,11 @@ use std::{
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
-use tauri::{
-    Emitter, Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
 
 const DEFAULT_DESKTOP_PORT: u16 = 41517;
 const LYRICS_WINDOW_LABEL: &str = "desktop-lyrics";
@@ -36,6 +33,63 @@ struct LyricsPayload {
     text: String,
     color: String,
     title: String,
+}
+
+#[derive(Clone, Serialize)]
+struct LyricsWindowPoint {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone, Serialize)]
+struct LyricsWindowSize {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Serialize)]
+struct LyricsWindowSnapshot {
+    exists: bool,
+    visible: Option<bool>,
+    minimized: Option<bool>,
+    position: Option<LyricsWindowPoint>,
+    size: Option<LyricsWindowSize>,
+}
+
+#[derive(Clone, Serialize)]
+struct LyricsWindowStep {
+    name: String,
+    ok: bool,
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+struct LyricsWindowDebug {
+    action: String,
+    requested_enabled: Option<bool>,
+    existed_before: bool,
+    created: bool,
+    status_before: LyricsWindowSnapshot,
+    status_after_show: LyricsWindowSnapshot,
+    status_after: LyricsWindowSnapshot,
+    steps: Vec<LyricsWindowStep>,
+}
+
+impl LyricsWindowDebug {
+    fn new(action: &str, requested_enabled: Option<bool>, app: &tauri::AppHandle) -> Self {
+        let status_before = lyrics_window_snapshot(app);
+        let existed_before = status_before.exists;
+        Self {
+            action: action.to_string(),
+            requested_enabled,
+            existed_before,
+            created: false,
+            status_after_show: empty_lyrics_window_snapshot(),
+            status_after: status_before.clone(),
+            status_before,
+            steps: Vec::new(),
+        }
+    }
 }
 
 impl BackendState {
@@ -70,29 +124,60 @@ fn desktop_backend_endpoint(state: State<'_, BackendState>) -> Result<String, St
 }
 
 #[tauri::command]
-fn show_lyrics_window(app: tauri::AppHandle, state: State<'_, BackendState>) -> Result<(), String> {
-    let window = ensure_lyrics_window(&app)?;
-    reveal_lyrics_window(&app, &window)?;
+fn show_lyrics_window(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> Result<LyricsWindowDebug, String> {
+    let mut debug = LyricsWindowDebug::new("show_lyrics_window", Some(true), &app);
+    log_desktop_lyrics_debug("received show_lyrics_window command");
+
+    let window = ensure_lyrics_window(&app, &mut debug)?;
+    reveal_lyrics_window(&app, &window, &mut debug)?;
     let payload = state
         .lyrics_payload
         .lock()
         .map_err(|_| "Lyrics payload lock is poisoned".to_string())?
         .clone();
-    emit_lyrics_payload(&app, payload)
+    record_step(
+        &mut debug,
+        "emit_payload",
+        emit_lyrics_payload(&app, payload).map_err(|error| error.to_string()),
+    );
+    debug.status_after = lyrics_window_snapshot(&app);
+    log_lyrics_window_debug(&debug);
+    Ok(debug)
 }
 
 #[tauri::command]
-fn hide_lyrics_window(app: tauri::AppHandle, state: State<'_, BackendState>) -> Result<(), String> {
+fn hide_lyrics_window(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> Result<LyricsWindowDebug, String> {
+    let mut debug = LyricsWindowDebug::new("hide_lyrics_window", Some(false), &app);
+    log_desktop_lyrics_debug("received hide_lyrics_window command");
+
     if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
         let payload = default_lyrics_payload();
         *state
             .lyrics_payload
             .lock()
             .map_err(|_| "Lyrics payload lock is poisoned".to_string())? = payload.clone();
-        emit_lyrics_payload(&app, payload)?;
-        window.hide().map_err(|error| error.to_string())?;
+        record_step(
+            &mut debug,
+            "emit_disabled_payload",
+            emit_lyrics_payload(&app, payload).map_err(|error| error.to_string()),
+        );
+        record_step(
+            &mut debug,
+            "hide",
+            window.hide().map_err(|error| error.to_string()),
+        );
+    } else {
+        record_text_step(&mut debug, "get_existing_window", true, "window not found");
     }
-    Ok(())
+    debug.status_after = lyrics_window_snapshot(&app);
+    log_lyrics_window_debug(&debug);
+    Ok(debug)
 }
 
 #[tauri::command]
@@ -103,7 +188,12 @@ fn set_lyrics_window_payload(
     text: String,
     color: String,
     title: String,
-) -> Result<(), String> {
+) -> Result<LyricsWindowDebug, String> {
+    let mut debug = LyricsWindowDebug::new("set_lyrics_window_payload", Some(enabled), &app);
+    log_desktop_lyrics_debug(&format!(
+        "received set_lyrics_window_payload command enabled={enabled}"
+    ));
+
     let payload = LyricsPayload {
         enabled,
         text: normalized_lyrics_text(text),
@@ -116,11 +206,20 @@ fn set_lyrics_window_payload(
         .map_err(|_| "Lyrics payload lock is poisoned".to_string())? = payload.clone();
 
     if enabled {
-        let window = ensure_lyrics_window(&app)?;
-        reveal_lyrics_window(&app, &window)?;
+        let window = ensure_lyrics_window(&app, &mut debug)?;
+        reveal_lyrics_window(&app, &window, &mut debug)?;
+    } else {
+        record_text_step(&mut debug, "skip_reveal", true, "enabled=false");
     }
 
-    emit_lyrics_payload(&app, payload)
+    record_step(
+        &mut debug,
+        "emit_payload",
+        emit_lyrics_payload(&app, payload).map_err(|error| error.to_string()),
+    );
+    debug.status_after = lyrics_window_snapshot(&app);
+    log_lyrics_window_debug(&debug);
+    Ok(debug)
 }
 
 #[tauri::command]
@@ -130,6 +229,15 @@ fn current_lyrics_window_payload(state: State<'_, BackendState>) -> Result<Lyric
         .lock()
         .map_err(|_| "Lyrics payload lock is poisoned".to_string())
         .map(|payload| payload.clone())
+}
+
+#[tauri::command]
+fn lyrics_window_debug_status(app: tauri::AppHandle) -> LyricsWindowDebug {
+    let mut debug = LyricsWindowDebug::new("lyrics_window_debug_status", None, &app);
+    record_text_step(&mut debug, "snapshot", true, "status only");
+    debug.status_after = lyrics_window_snapshot(&app);
+    log_lyrics_window_debug(&debug);
+    debug
 }
 
 fn main() {
@@ -153,6 +261,7 @@ fn run_app() -> tauri::Result<()> {
                 .child
                 .lock()
                 .map_err(|_| "Backend child lock is poisoned".to_string())? = Some(child);
+            initialize_lyrics_window(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -160,84 +269,256 @@ fn run_app() -> tauri::Result<()> {
             show_lyrics_window,
             hide_lyrics_window,
             set_lyrics_window_payload,
-            current_lyrics_window_payload
+            current_lyrics_window_payload,
+            lyrics_window_debug_status
         ])
         .run(tauri::generate_context!())
 }
 
-fn ensure_lyrics_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+fn ensure_lyrics_window(
+    app: &tauri::AppHandle,
+    debug: &mut LyricsWindowDebug,
+) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
+        debug.existed_before = true;
+        record_text_step(debug, "get_existing_window", true, "found existing window");
         return Ok(window);
     }
 
-    let window = WebviewWindowBuilder::new(
-        app,
-        LYRICS_WINDOW_LABEL,
-        WebviewUrl::App("/#/desktop-lyrics".into()),
-    )
-    .title("Bilibili Radio Lyrics")
-    .inner_size(LYRICS_WINDOW_WIDTH, LYRICS_WINDOW_HEIGHT)
-    .min_inner_size(520.0, 76.0)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .visible(false)
-    .focused(false)
-    .build()
-    .map_err(|error| error.to_string())?;
-
-    configure_lyrics_window(&window)?;
-    position_lyrics_window(app, &window)?;
-    Ok(window)
+    record_text_step(
+        debug,
+        "get_existing_window",
+        false,
+        "configured desktop-lyrics window not found",
+    );
+    let message = "desktop-lyrics window is not available from Tauri config".to_string();
+    log_desktop_lyrics_debug(&message);
+    Err(message)
 }
 
-fn configure_lyrics_window(window: &WebviewWindow) -> Result<(), String> {
-    window
-        .set_always_on_top(true)
-        .map_err(|error| error.to_string())?;
-    window
-        .set_skip_taskbar(true)
-        .map_err(|error| error.to_string())?;
-    let _ = window.set_visible_on_all_workspaces(true);
-    Ok(())
+fn initialize_lyrics_window(app: &tauri::AppHandle) {
+    let mut debug = LyricsWindowDebug::new("initialize_lyrics_window", Some(false), app);
+    if let Some(window) = app.get_webview_window(LYRICS_WINDOW_LABEL) {
+        record_text_step(
+            &mut debug,
+            "get_existing_window",
+            true,
+            "found configured window",
+        );
+        configure_lyrics_window(&window, &mut debug);
+        if let Err(error) = position_lyrics_window(app, &window) {
+            record_text_step(&mut debug, "set_position", false, &error);
+        } else {
+            record_text_step(&mut debug, "set_position", true, "ok");
+        }
+        record_step(
+            &mut debug,
+            "set_ignore_cursor_events_false",
+            window
+                .set_ignore_cursor_events(false)
+                .map_err(|error| error.to_string()),
+        );
+        record_step(
+            &mut debug,
+            "hide_initial",
+            window.hide().map_err(|error| error.to_string()),
+        );
+    } else {
+        record_text_step(
+            &mut debug,
+            "get_existing_window",
+            false,
+            "configured window missing during setup",
+        );
+    }
+    debug.status_after = lyrics_window_snapshot(app);
+    log_lyrics_window_debug(&debug);
+}
+
+fn configure_lyrics_window(window: &WebviewWindow, debug: &mut LyricsWindowDebug) {
+    record_step(
+        debug,
+        "set_always_on_top",
+        window
+            .set_always_on_top(true)
+            .map_err(|error| error.to_string()),
+    );
+    record_step(
+        debug,
+        "set_skip_taskbar",
+        window
+            .set_skip_taskbar(true)
+            .map_err(|error| error.to_string()),
+    );
+    record_step(
+        debug,
+        "set_visible_on_all_workspaces",
+        window
+            .set_visible_on_all_workspaces(true)
+            .map_err(|error| error.to_string()),
+    );
 }
 
 fn position_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    let Some(monitor) = app.primary_monitor().map_err(|error| error.to_string())? else {
+    let Some((x, y)) = lyrics_window_initial_position(app) else {
         return Ok(());
     };
+    window
+        .set_position(Position::Physical(PhysicalPosition::new(
+            x.round() as i32,
+            y.round() as i32,
+        )))
+        .map_err(|error| error.to_string())
+}
+
+fn lyrics_window_initial_position(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    let monitor = app.primary_monitor().ok()??;
     let work_area = monitor.work_area();
     let width = LYRICS_WINDOW_WIDTH.round() as i32;
     let height = LYRICS_WINDOW_HEIGHT.round() as i32;
     let x = work_area.position.x + ((work_area.size.width as i32 - width) / 2).max(0);
     let y = work_area.position.y
         + (work_area.size.height as i32 - height - LYRICS_WINDOW_BOTTOM_MARGIN).max(0);
-
-    window
-        .set_position(Position::Physical(PhysicalPosition::new(x, y)))
-        .map_err(|error| error.to_string())
+    Some((x as f64, y as f64))
 }
 
-fn reveal_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    configure_lyrics_window(window)?;
-    position_lyrics_window(app, window)?;
-    let _ = window.unminimize();
-    window.show().map_err(|error| error.to_string())?;
-    window
-        .set_always_on_top(true)
-        .map_err(|error| error.to_string())?;
-    // Transparent always-on-top windows still receive mouse input by default on Windows.
-    // Desktop lyrics must never block the player UI or other apps.
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|error| error.to_string())
+fn reveal_lyrics_window(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    debug: &mut LyricsWindowDebug,
+) -> Result<(), String> {
+    debug.status_before = lyrics_window_snapshot(app);
+    let was_visible = debug.status_before.visible == Some(true);
+    configure_lyrics_window(window, debug);
+    record_step(
+        debug,
+        "unminimize",
+        window.unminimize().map_err(|error| error.to_string()),
+    );
+    let show_result = window.show().map_err(|error| error.to_string());
+    let show_error = show_result.as_ref().err().cloned();
+    record_step(debug, "show", show_result);
+    debug.status_after_show = lyrics_window_snapshot(app);
+    if let Some(error) = show_error {
+        debug.status_after = lyrics_window_snapshot(app);
+        log_lyrics_window_debug(debug);
+        return Err(error);
+    }
+    if was_visible {
+        record_text_step(debug, "set_position", true, "skip; window already visible");
+    } else if let Err(error) = position_lyrics_window(app, window) {
+        record_text_step(debug, "set_position", false, &error);
+    } else {
+        record_text_step(debug, "set_position", true, "ok");
+    }
+    configure_lyrics_window(window, debug);
+    record_step(
+        debug,
+        "set_ignore_cursor_events_false",
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|error| error.to_string()),
+    );
+    debug.status_after = lyrics_window_snapshot(app);
+    Ok(())
 }
 
 fn emit_lyrics_payload(app: &tauri::AppHandle, payload: LyricsPayload) -> Result<(), String> {
     app.emit_to(LYRICS_WINDOW_LABEL, LYRICS_UPDATE_EVENT, payload)
         .map_err(|error| error.to_string())
+}
+
+fn empty_lyrics_window_snapshot() -> LyricsWindowSnapshot {
+    LyricsWindowSnapshot {
+        exists: false,
+        visible: None,
+        minimized: None,
+        position: None,
+        size: None,
+    }
+}
+
+fn lyrics_window_snapshot(app: &tauri::AppHandle) -> LyricsWindowSnapshot {
+    app.get_webview_window(LYRICS_WINDOW_LABEL)
+        .map(|window| lyrics_window_snapshot_from_window(&window))
+        .unwrap_or_else(empty_lyrics_window_snapshot)
+}
+
+fn lyrics_window_snapshot_from_window(window: &WebviewWindow) -> LyricsWindowSnapshot {
+    let position = window
+        .outer_position()
+        .ok()
+        .map(|position| LyricsWindowPoint {
+            x: position.x,
+            y: position.y,
+        });
+    let size = window.outer_size().ok().map(|size| LyricsWindowSize {
+        width: size.width,
+        height: size.height,
+    });
+
+    LyricsWindowSnapshot {
+        exists: true,
+        visible: window.is_visible().ok(),
+        minimized: window.is_minimized().ok(),
+        position,
+        size,
+    }
+}
+
+fn record_step(debug: &mut LyricsWindowDebug, name: &str, result: Result<(), String>) -> bool {
+    match result {
+        Ok(()) => {
+            record_text_step(debug, name, true, "ok");
+            true
+        }
+        Err(error) => {
+            record_text_step(debug, name, false, &error);
+            false
+        }
+    }
+}
+
+fn record_text_step(debug: &mut LyricsWindowDebug, name: &str, ok: bool, message: &str) {
+    debug.steps.push(LyricsWindowStep {
+        name: name.to_string(),
+        ok,
+        message: message.to_string(),
+    });
+    log_desktop_lyrics_debug(&format!(
+        "{} step={} ok={} message={}",
+        debug.action, name, ok, message
+    ));
+}
+
+fn log_lyrics_window_debug(debug: &LyricsWindowDebug) {
+    log_desktop_lyrics_debug(&format!(
+        "{} requested_enabled={:?} existed_before={} created={} before={} after_show={} after={}",
+        debug.action,
+        debug.requested_enabled,
+        debug.existed_before,
+        debug.created,
+        format_lyrics_snapshot(&debug.status_before),
+        format_lyrics_snapshot(&debug.status_after_show),
+        format_lyrics_snapshot(&debug.status_after)
+    ));
+}
+
+fn format_lyrics_snapshot(snapshot: &LyricsWindowSnapshot) -> String {
+    let position = snapshot
+        .position
+        .as_ref()
+        .map(|position| format!("{},{}", position.x, position.y))
+        .unwrap_or_else(|| "none".to_string());
+    let size = snapshot
+        .size
+        .as_ref()
+        .map(|size| format!("{}x{}", size.width, size.height))
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "exists={} visible={:?} minimized={:?} position={} size={}",
+        snapshot.exists, snapshot.visible, snapshot.minimized, position, size
+    )
 }
 
 fn normalized_lyrics_text(text: String) -> String {
@@ -277,6 +558,27 @@ fn write_startup_error(message: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(log_path, message);
+}
+
+fn log_desktop_lyrics_debug(message: &str) {
+    let log_path = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir)
+        .join("Bilibili Radio")
+        .join("desktop-lyrics.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let line = format!("{timestamp_ms} {message}\n");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .and_then(|mut file| file.write_all(line.as_bytes()));
 }
 
 fn start_backend(app: &tauri::App) -> Result<(String, Child), Box<dyn std::error::Error>> {

@@ -11,6 +11,7 @@ import {
   fetchPlaylists,
   fetchRecent,
   removeLikeTrack,
+  removeRecentTrack,
 } from '@/api/client'
 import type { Playlist, Track } from '@/types'
 
@@ -177,6 +178,13 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  function removeRecent(track: Track) {
+    recent.value = recent.value.filter((item) => !isSameTrack(item, track))
+    if (backendAvailable.value) {
+      void removeRecentTrack(track).catch(handleBackgroundError)
+    }
+  }
+
   function isLiked(bvid: string): boolean {
     return likes.value.some((t) => t.bvid === bvid)
   }
@@ -316,6 +324,7 @@ export const useLibraryStore = defineStore('library', () => {
     refreshFromBackend,
     addRecent,
     clearRecent,
+    removeRecent,
     isLiked,
     isTrackLiked,
     toggleLike,

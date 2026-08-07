@@ -12,12 +12,30 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Bilibili Radio",
         "width": 1280,
         "height": 820,
         "minWidth": 960,
         "minHeight": 640,
         "resizable": true
+      },
+      {
+        "label": "desktop-lyrics",
+        "title": "Bilibili Radio Lyrics",
+        "url": "index.html#/desktop-lyrics",
+        "width": 920,
+        "height": 112,
+        "minWidth": 520,
+        "minHeight": 76,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": false
       }
     ],
     "security": {

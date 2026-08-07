@@ -634,6 +634,12 @@ def clear_recent():
     return Result.ok(_library_for_request().clear_recent()).json()
 
 
+@app.delete("/api/library/recent/<bvid>")
+def remove_recent(bvid: str):
+    cid = request.args.get("cid", type=int)
+    return Result.ok(_library_for_request().remove_recent(bvid, cid=cid)).json()
+
+
 @app.post("/api/library/recent")
 def add_recent():
     payload = _json_body()

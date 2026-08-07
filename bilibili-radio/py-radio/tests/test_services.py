@@ -318,6 +318,24 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(result["removed"], 1)
         self.assertEqual(self.service.list_recent(), [])
 
+    def test_remove_recent_removes_only_target_track(self):
+        other = Track(
+            bvid=VALID_BVID,
+            cid=456,
+            title="Other Track",
+            owner="UP",
+            duration=120,
+        )
+        self.service.add_recent(self.track, position_ms=42_000, listen_ms=20_000)
+        self.service.add_recent(other, position_ms=12_000, listen_ms=20_000)
+
+        result = self.service.remove_recent(self.track.bvid, cid=self.track.cid)
+        remaining = self.service.list_recent()
+
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["trackId"], other.track_id)
+
     def test_private_review_roundtrip_updates_and_deletes(self):
         review = self.service.save_review(
             self.track,

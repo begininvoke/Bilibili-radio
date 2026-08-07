@@ -48,6 +48,9 @@
         <button class="action-btn" title="添加到歌单" @click.stop="handlePlaylist">
           <AppIcon name="list" :size="16" />
         </button>
+        <button v-if="removable" class="action-btn" title="删除" @click.stop="$emit('remove')">
+          <AppIcon name="close" :size="16" />
+        </button>
       </div>
     </div>
 
@@ -128,12 +131,14 @@ const props = defineProps<{
   isCurrent?: boolean
   isPlaying?: boolean
   isLiked?: boolean
+  removable?: boolean
 }>()
 
 const emit = defineEmits<{
   play: []
   like: []
   enqueue: []
+  remove: []
 }>()
 
 const player = usePlayerStore()

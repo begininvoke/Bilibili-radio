@@ -13,7 +13,9 @@
           </div>
         </div>
         <div class="track-meta">
-          <div class="meta-title" :title="track.title">{{ track.title }}</div>
+          <button class="meta-title meta-title-button" type="button" :title="track.title" @click.stop="openNowPlaying">
+            {{ track.title }}
+          </button>
           <div class="meta-owner" :title="track.owner">{{ track.owner }}</div>
         </div>
         <button
@@ -87,7 +89,7 @@
         :class="{ active: ui.lyricsOverlayEnabled }"
         :title="ui.lyricsOverlayEnabled ? '关闭桌面歌词' : '打开桌面歌词'"
         :disabled="!isDesktop"
-        @click="ui.toggleLyricsOverlay()"
+        @click="toggleDesktopLyrics"
       >
         <AppIcon name="subtitle" :size="18" />
         <span class="lyrics-toggle-text">
@@ -102,7 +104,7 @@
           :class="{ selected: color === ui.lyricsOverlayColor }"
           :style="{ backgroundColor: color }"
           :title="`桌面歌词颜色 ${color}`"
-          @click="ui.setLyricsOverlayColor(color)"
+          @click="setDesktopLyricsColor(color)"
         />
       </div>
       <button class="icon-btn" title="画中画（暂未接入）" disabled>
@@ -136,11 +138,21 @@ import LoadingDots from '@/components/base/LoadingDots.vue'
 import ProgressBar from '@/components/ProgressBar.vue'
 import VolumeControl from '@/components/VolumeControl.vue'
 
+interface LyricsWindowDebug {
+  action: string
+  requested_enabled?: boolean | null
+  status_before?: unknown
+  status_after_show?: unknown
+  status_after?: unknown
+  steps?: unknown[]
+}
+
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
 
-const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading } = storeToRefs(player)
+const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading, desktopLyricText } =
+  storeToRefs(player)
 
 // 当前展示的曲目：优先队列曲目，否则回退到裸 videoInfo（直接输入播放的场景）
 const track = computed<Track | null>(() => {
@@ -183,6 +195,45 @@ function toggleLike() {
 function openNowPlaying() {
   if (!player.hasTrack) return
   ui.openNowPlaying()
+}
+
+async function toggleDesktopLyrics() {
+  if (!isDesktop.value) return
+  const enabled = !ui.lyricsOverlayEnabled
+  console.info('[desktop-lyrics] player bar toggle click', { enabled })
+  ui.setLyricsOverlayEnabled(enabled)
+  if (enabled) {
+    void player.loadCurrentSubtitles()
+  }
+  await syncDesktopLyricsWindow(enabled)
+}
+
+async function setDesktopLyricsColor(color: string) {
+  ui.setLyricsOverlayColor(color)
+  if (ui.lyricsOverlayEnabled) {
+    await syncDesktopLyricsWindow(true)
+  }
+}
+
+async function syncDesktopLyricsWindow(enabled: boolean) {
+  if (!isDesktop.value) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    if (!enabled) {
+      const debug = await invoke<LyricsWindowDebug>('hide_lyrics_window')
+      console.info('[desktop-lyrics] player bar hide', debug)
+      return
+    }
+    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
+      enabled: true,
+      text: desktopLyricText.value || '-',
+      color: ui.lyricsOverlayColor,
+      title: track.value?.title ?? '',
+    })
+    console.info('[desktop-lyrics] player bar show', debug)
+  } catch (error) {
+    console.warn('Failed to toggle desktop lyrics window:', error)
+  }
 }
 </script>
 
@@ -272,6 +323,20 @@ function openNowPlaying() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.meta-title-button {
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.meta-title-button:hover {
+  color: var(--color-primary);
 }
 
 .meta-title.muted {

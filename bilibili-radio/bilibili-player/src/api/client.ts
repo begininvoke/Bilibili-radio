@@ -303,6 +303,15 @@ export async function clearRecentTracks(): Promise<void> {
   await apiRequest('/api/library/recent', { method: 'DELETE' })
 }
 
+export async function removeRecentTrack(track: Track): Promise<void> {
+  const params = new URLSearchParams()
+  if (track.cid != null) params.set('cid', String(track.cid))
+  const query = params.toString()
+  await apiRequest(`/api/library/recent/${encodeURIComponent(track.bvid)}${query ? `?${query}` : ''}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function fetchLikes(): Promise<Track[]> {
   const data = await apiRequest<TrackListResult>('/api/library/likes')
   return data.tracks

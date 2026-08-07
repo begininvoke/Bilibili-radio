@@ -1,6 +1,26 @@
 <template>
-  <main class="lyrics-window" data-tauri-drag-region>
-    <div class="lyrics-shell" data-tauri-drag-region>
+  <main class="lyrics-window">
+    <div class="lyrics-shell" :style="shellStyle" data-tauri-drag-region @mousedown="startWindowDrag">
+      <div
+        class="drag-border drag-border-top"
+        title="拖动桌面歌词"
+        data-tauri-drag-region
+      />
+      <div
+        class="drag-border drag-border-right"
+        title="拖动桌面歌词"
+        data-tauri-drag-region
+      />
+      <div
+        class="drag-border drag-border-bottom"
+        title="拖动桌面歌词"
+        data-tauri-drag-region
+      />
+      <div
+        class="drag-border drag-border-left"
+        title="拖动桌面歌词"
+        data-tauri-drag-region
+      />
       <p
         class="lyrics-text"
         :style="{ color: state.color }"
@@ -14,7 +34,9 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive } from 'vue'
+import type { CSSProperties } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const LYRICS_UPDATE_EVENT = 'desktop-lyrics:update'
 const LYRICS_READY_EVENT = 'desktop-lyrics:ready'
@@ -34,6 +56,13 @@ const state = reactive<LyricsPayload>({
 })
 
 let unlistenUpdate: (() => void) | null = null
+
+const shellStyle = computed<CSSProperties>(
+  () =>
+    ({
+      '--lyrics-color': state.color,
+    }) as CSSProperties
+)
 
 onMounted(async () => {
   if (!isDesktopRuntime()) return
@@ -69,6 +98,16 @@ function applyLyricsPayload(payload: LyricsPayload) {
   state.color = payload.color || '#fb7299'
   state.title = payload.title || ''
 }
+
+async function startWindowDrag(event: MouseEvent) {
+  if (!isDesktopRuntime() || event.button !== 0) return
+  event.preventDefault()
+  try {
+    await getCurrentWindow().startDragging()
+  } catch (error) {
+    console.warn('Failed to drag desktop lyrics window:', error)
+  }
+}
 </script>
 
 <style scoped>
@@ -89,6 +128,7 @@ function applyLyricsPayload(payload: LyricsPayload) {
   align-items: center;
   justify-content: center;
   background: transparent;
+  pointer-events: auto;
   user-select: none;
 }
 
@@ -101,16 +141,55 @@ function applyLyricsPayload(payload: LyricsPayload) {
   justify-content: center;
   padding: 14px 28px;
   border-radius: 8px;
-  background: rgba(12, 12, 16, 0.68);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  pointer-events: auto;
+  transition: border-color 120ms ease;
+}
+
+.lyrics-shell:hover {
+  border-color: var(--lyrics-color, #fb7299);
+}
+
+.drag-border {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+}
+
+.drag-border-top {
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  height: 16px;
+}
+
+.drag-border-right {
+  top: -1px;
+  right: -1px;
+  bottom: -1px;
+  width: 16px;
+}
+
+.drag-border-bottom {
+  right: -1px;
+  bottom: -1px;
+  left: -1px;
+  height: 16px;
+}
+
+.drag-border-left {
+  top: -1px;
+  bottom: -1px;
+  left: -1px;
+  width: 16px;
 }
 
 .lyrics-text {
   width: 100%;
   margin: 0;
+  padding: 0 22px;
   overflow: hidden;
   text-align: center;
   text-overflow: ellipsis;
@@ -122,6 +201,6 @@ function applyLyricsPayload(payload: LyricsPayload) {
   text-shadow:
     0 2px 1px rgba(0, 0, 0, 0.85),
     0 0 14px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
 }
-
 </style>

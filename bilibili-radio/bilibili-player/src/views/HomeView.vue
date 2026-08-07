@@ -16,7 +16,9 @@
           v-for="track in recent.slice(0, 5)"
           :key="track.trackId ?? track.bvid"
           :track="track"
+          removable
           @play="player.playTrack(track)"
+          @remove="removeRecent(track)"
         />
       </div>
     </section>
@@ -48,18 +50,22 @@
     <section class="section">
       <SectionHeader title="我的播放次数 Top 10" :count="playCountRanking.length" />
       <div v-if="playCountRanking.length" class="rank-list">
-        <button
+        <article
           v-for="(track, i) in playCountRanking"
           :key="track.trackId ?? `${track.bvid}:${track.cid ?? i}`"
           class="rank-row"
-          @click="player.playTrack(track)"
         >
-          <span class="rank-index">{{ i + 1 }}</span>
-          <img class="rank-cover" :src="mediaUrl(track.cover)" :alt="track.title" loading="lazy" />
-          <span class="rank-title" :title="track.title">{{ track.title }}</span>
-          <span class="rank-owner">{{ track.owner }}</span>
-          <span class="rank-count">已播放 {{ formatCount(track.recentPlayCount ?? 0) }} 次</span>
-        </button>
+          <button class="rank-main" @click="player.playTrack(track)">
+            <span class="rank-index">{{ i + 1 }}</span>
+            <img class="rank-cover" :src="mediaUrl(track.cover)" :alt="track.title" loading="lazy" />
+            <span class="rank-title" :title="track.title">{{ track.title }}</span>
+            <span class="rank-owner">{{ track.owner }}</span>
+            <span class="rank-count">已播放 {{ formatCount(track.recentPlayCount ?? 0) }} 次</span>
+          </button>
+          <button class="rank-remove" title="删除" @click="removeRecent(track)">
+            <AppIcon name="close" :size="15" />
+          </button>
+        </article>
       </div>
       <p v-else class="empty-text">暂无播放次数数据，先搜索或播放几首内容。</p>
     </section>
@@ -139,6 +145,10 @@ function dismissRecommendation(item: RecommendationItem) {
     reason: item.reason,
     score: item.score,
   })
+}
+
+function removeRecent(track: Track) {
+  library.removeRecent(track)
 }
 
 function trackIdentity(track: Track): string {
@@ -277,22 +287,34 @@ function uniqueTracks(tracks: Track[]): Track[] {
 
 .rank-row {
   display: grid;
-  grid-template-columns: 32px 44px minmax(0, 1fr) minmax(96px, 160px) 112px;
+  grid-template-columns: minmax(0, 1fr) 32px;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
   height: 58px;
-  padding: 0 12px;
-  border: none;
+  padding: 0 8px 0 0;
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--color-text-primary);
-  cursor: pointer;
-  text-align: left;
   transition: background 160ms ease;
 }
 
 .rank-row:hover {
   background: var(--color-bg-hover);
+}
+
+.rank-main {
+  min-width: 0;
+  height: 58px;
+  display: grid;
+  grid-template-columns: 32px 44px minmax(0, 1fr) minmax(96px, 160px) 112px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
 }
 
 .rank-index {
@@ -334,6 +356,30 @@ function uniqueTracks(tracks: Track[]): Track[] {
   white-space: nowrap;
 }
 
+.rank-remove {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.rank-row:hover .rank-remove,
+.rank-remove:focus-visible {
+  opacity: 1;
+}
+
+.rank-remove:hover {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
 .more-link {
   font-size: 13px;
   color: var(--color-text-secondary);
@@ -351,6 +397,10 @@ function uniqueTracks(tracks: Track[]): Track[] {
   }
 
   .rank-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .rank-main {
     grid-template-columns: 28px 40px minmax(0, 1fr) 96px;
   }
 

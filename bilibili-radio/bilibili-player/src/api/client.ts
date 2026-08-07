@@ -21,6 +21,13 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 let csrfToken: string | null = null
+let runtimeApiBaseUrl: string | null = null
+
+declare global {
+  interface Window {
+    __BILIBILI_RADIO_API_BASE_URL__?: string
+  }
+}
 
 interface ApiResponse<T> {
   success: boolean
@@ -105,6 +112,22 @@ export function setApiCsrfToken(token: string | null | undefined): void {
   csrfToken = token || null
 }
 
+export function configureApiBaseUrl(baseUrl: string | null | undefined): void {
+  const normalized = normalizeBaseUrl(baseUrl)
+  runtimeApiBaseUrl = normalized
+  if (normalized) {
+    window.__BILIBILI_RADIO_API_BASE_URL__ = normalized
+  } else {
+    delete window.__BILIBILI_RADIO_API_BASE_URL__
+  }
+}
+
+export function getApiBaseUrl(): string {
+  return normalizeBaseUrl(runtimeApiBaseUrl)
+    || normalizeBaseUrl(window.__BILIBILI_RADIO_API_BASE_URL__)
+    || normalizeBaseUrl(API_BASE_URL)
+}
+
 export function redirectToOidcLogin(next = currentAppLocation()): void {
   const params = new URLSearchParams({ next })
   window.location.assign(apiUrl(`/api/session/login?${params.toString()}`))
@@ -112,16 +135,23 @@ export function redirectToOidcLogin(next = currentAppLocation()): void {
 
 export function apiUrl(path: string): string {
   if (/^https?:\/\//.test(path)) return path
-  return `${API_BASE_URL}${path}`
+  return `${getApiBaseUrl()}${path}`
 }
 
 export function mediaUrl(url?: string | null): string {
   const value = (url || '').trim()
   if (!value) return ''
   if (value.startsWith('data:') || value.startsWith('blob:')) return value
-  if (value.startsWith('/') && !value.startsWith('//')) return value
+  if (value.startsWith('/') && !value.startsWith('//')) {
+    return value.startsWith('/api/') ? apiUrl(value) : value
+  }
   if (!/^https?:\/\//.test(value)) return value
   return apiUrl(`/api/images/proxy?url=${encodeURIComponent(value)}`)
+}
+
+function normalizeBaseUrl(value: string | null | undefined): string {
+  const trimmed = (value || '').trim()
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
 }
 
 export class ApiError extends Error {

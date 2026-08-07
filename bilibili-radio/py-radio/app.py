@@ -83,6 +83,28 @@ if cors_origins:
         expose_headers=['X-Request-ID', 'Server-Timing'],
     )
 
+DESKTOP_CORS_EXACT_ORIGINS = {
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'tauri://localhost',
+}
+DESKTOP_CORS_LOCAL_ORIGIN_RE = re.compile(r'^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$')
+
+
+@app.after_request
+def apply_desktop_cors(response):
+    if os.getenv('APP_RUNTIME', '').strip().lower() != 'desktop':
+        return response
+
+    origin = request.headers.get('Origin', '').strip()
+    if origin in DESKTOP_CORS_EXACT_ORIGINS or DESKTOP_CORS_LOCAL_ORIGIN_RE.match(origin):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+        response.headers.add('Vary', 'Origin')
+    return response
+
 init_db()
 identity_service = IdentityService()
 oidc_auth = OIDCAuth(app, identity_service)
@@ -189,6 +211,45 @@ def _close_runtime_clients() -> None:
 
 
 atexit.register(_close_runtime_clients)
+
+
+def is_desktop_runtime() -> bool:
+    return os.getenv('APP_RUNTIME', '').strip().lower() == 'desktop'
+
+
+def resolve_bind_host(*, auth_enabled: bool = oidc_auth.enabled) -> str:
+    configured_host = os.getenv('APP_BIND_HOST') or os.getenv('APP_DEV_HOST')
+    if configured_host:
+        return configured_host.strip()
+    if is_desktop_runtime():
+        return '127.0.0.1'
+    return '127.0.0.1' if not auth_enabled else Server.HOST
+
+
+def resolve_bind_port() -> int:
+    configured_port = os.getenv('APP_BIND_PORT') or os.getenv('PORT')
+    if not configured_port:
+        return Server.PORT
+    try:
+        port = int(configured_port)
+    except ValueError as exc:
+        raise RuntimeError('APP_BIND_PORT must be an integer') from exc
+    if port < 1 or port > 65535:
+        raise RuntimeError('APP_BIND_PORT must be between 1 and 65535')
+    return port
+
+
+def enforce_loopback_binding(host: str, *, auth_enabled: bool = oidc_auth.enabled) -> None:
+    if (
+        not auth_enabled
+        and host not in {'127.0.0.1', '::1', 'localhost'}
+        and os.getenv('ALLOW_INSECURE_LOCAL_AUTH', '').strip().lower()
+        not in {'1', 'true', 'yes', 'on'}
+    ):
+        raise RuntimeError(
+            'AUTH_MODE=disabled may only bind to loopback; set '
+            'ALLOW_INSECURE_LOCAL_AUTH=1 to acknowledge the risk'
+        )
 
 
 @app.teardown_request
@@ -1127,28 +1188,17 @@ def _is_allowed_image_host(hostname: str) -> bool:
 
 
 if __name__ == "__main__":
+    bind_host = resolve_bind_host()
+    bind_port = resolve_bind_port()
     print("=" * 60)
     print("Bilibili Radio backend")
     print("=" * 60)
-    print(f"Development HTTP server: http://localhost:{Server.PORT}")
+    print(f"HTTP server: http://{bind_host}:{bind_port}")
     print("=" * 60)
-    development_host = os.getenv(
-        'APP_DEV_HOST',
-        '127.0.0.1' if not oidc_auth.enabled else Server.HOST,
-    ).strip()
-    if (
-        not oidc_auth.enabled
-        and development_host not in {'127.0.0.1', '::1', 'localhost'}
-        and os.getenv('ALLOW_INSECURE_LOCAL_AUTH', '').strip().lower()
-        not in {'1', 'true', 'yes', 'on'}
-    ):
-        raise RuntimeError(
-            'AUTH_MODE=disabled may only bind to loopback; set '
-            'ALLOW_INSECURE_LOCAL_AUTH=1 to acknowledge the risk'
-        )
+    enforce_loopback_binding(bind_host)
     app.run(
-        host=development_host,
-        port=Server.PORT,
+        host=bind_host,
+        port=bind_port,
         debug=Server.DEBUG,
         threaded=True,
     )

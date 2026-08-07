@@ -24,3 +24,10 @@ __pycache__/
 # Local backend runtime data
 py-radio/data/
 server-data/
+
+# Desktop packaging outputs
+py-radio/build/
+py-radio/dist/
+py-radio/.venv-desktop/
+bilibili-player/src-tauri/target/
+bilibili-player/src-tauri/gen/

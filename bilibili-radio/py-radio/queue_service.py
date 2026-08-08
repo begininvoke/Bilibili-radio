@@ -80,15 +80,16 @@ class PlayerQueueService:
                 conn.execute(
                     """
                     INSERT INTO tracks (
-                        track_id, bvid, cid, title, owner, cover, duration, play_count,
+                        track_id, bvid, cid, title, owner, owner_mid, cover, duration, play_count,
                         published_at, page, page_title, source, raw_json, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(track_id) DO UPDATE SET
                         bvid = excluded.bvid,
                         cid = excluded.cid,
                         title = excluded.title,
                         owner = excluded.owner,
+                        owner_mid = excluded.owner_mid,
                         cover = excluded.cover,
                         duration = excluded.duration,
                         play_count = excluded.play_count,
@@ -105,6 +106,7 @@ class PlayerQueueService:
                         track.cid,
                         track.title,
                         track.owner,
+                        track.owner_mid,
                         track.cover,
                         track.duration,
                         track.play_count,
@@ -157,6 +159,7 @@ class PlayerQueueService:
             cid=row["cid"],
             title=row["title"],
             owner=row["owner"],
+            owner_mid=row["owner_mid"] if "owner_mid" in row.keys() else None,
             cover=row["cover"],
             duration=row["duration"],
             play_count=row["play_count"],

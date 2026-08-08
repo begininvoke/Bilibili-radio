@@ -2,11 +2,15 @@ import type {
   AdminStatsSummary,
   AdminRoleToggleResult,
   AdminUsersPage,
+  AppSettings,
   AppSession,
   AudioStreamInfo,
+  AudioQualityPreference,
   AuthQrCode,
   AuthQrStatus,
   AuthStatus,
+  BiliUpProfile,
+  BiliUpTracksResult,
   FavoriteFolder,
   PlayerQueueSnapshot,
   Playlist,
@@ -56,7 +60,7 @@ export interface TrackStreamInfo extends AudioStreamInfo {
   relativeUrl?: string
   bvid?: string
   cid?: number
-  quality?: string
+  quality?: AudioQualityPreference
   actualQuality?: string
   codec?: string
   fallback?: boolean
@@ -72,6 +76,14 @@ export interface TrackReviewResult {
 
 export interface PlaylistListResult {
   playlists: Playlist[]
+}
+
+export interface PlaylistReplaceResult {
+  playlist: Playlist
+  total: number
+  replaced: number
+  duplicated: number
+  unavailable: number
 }
 
 export interface FavoriteFolderListResult {
@@ -232,7 +244,7 @@ export async function getTrackComments(
 export async function getTrackStreamInfo(
   bvid: string,
   cid?: number | null,
-  quality = 'auto'
+  quality: AudioQualityPreference = 'auto'
 ): Promise<TrackStreamInfo> {
   const params = new URLSearchParams({ quality })
   const safeBvid = encodeURIComponent(bvid)
@@ -248,7 +260,10 @@ export async function getTrackStreamInfo(
   return streamInfo
 }
 
-export async function downloadTrackToLocalFile(track: Track, quality = 'auto'): Promise<LocalDownloadResult> {
+export async function downloadTrackToLocalFile(
+  track: Track,
+  quality: AudioQualityPreference = 'auto'
+): Promise<LocalDownloadResult> {
   return apiRequest<LocalDownloadResult>('/api/downloads/track', {
     method: 'POST',
     body: JSON.stringify({
@@ -291,10 +306,13 @@ export async function fetchRecent(limit = 100): Promise<Track[]> {
   return data.tracks
 }
 
-export async function addRecentTrack(track: Track): Promise<void> {
+export async function addRecentTrack(
+  track: Track,
+  playback: { positionMs?: number; listenMs?: number; completed?: boolean } = {}
+): Promise<void> {
   await apiRequest('/api/library/recent', {
     method: 'POST',
-    body: JSON.stringify({ track }),
+    body: JSON.stringify({ track, ...playback }),
     headers: { 'Content-Type': 'application/json' },
   })
 }
@@ -369,6 +387,31 @@ export async function createPlaylistRemote(name: string, tracks: Track[] = []): 
   })
 }
 
+export async function createCollectionRemote(
+  name: string,
+  tracks: Track[] = [],
+  sourceType: Playlist['sourceType'] = 'user-created',
+  sourceBvid?: string | null,
+  cover?: string | null
+): Promise<Playlist> {
+  return apiRequest<Playlist>('/api/library/playlists', {
+    method: 'POST',
+    body: JSON.stringify({ name, tracks, sourceType, sourceBvid, cover }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+export async function updatePlaylistRemote(
+  id: string,
+  payload: { name?: string; cover?: string | null }
+): Promise<Playlist> {
+  return apiRequest<Playlist>(`/api/library/playlists/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 export async function deletePlaylistRemote(id: string): Promise<void> {
   await apiRequest(`/api/library/playlists/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
@@ -376,6 +419,14 @@ export async function deletePlaylistRemote(id: string): Promise<void> {
 export async function addPlaylistItemsRemote(id: string, tracks: Track[]): Promise<void> {
   await apiRequest(`/api/library/playlists/${encodeURIComponent(id)}/items:batch`, {
     method: 'POST',
+    body: JSON.stringify({ tracks }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+export async function replacePlaylistItemsRemote(id: string, tracks: Track[]): Promise<PlaylistReplaceResult> {
+  return apiRequest<PlaylistReplaceResult>(`/api/library/playlists/${encodeURIComponent(id)}/items`, {
+    method: 'PUT',
     body: JSON.stringify({ tracks }),
     headers: { 'Content-Type': 'application/json' },
   })
@@ -446,6 +497,36 @@ export async function fetchBiliFavoriteTracks(
     page_size: String(pageSize),
   })
   return apiRequest<FavoriteTracksResult>(`/api/bili/favorites/${mediaId}/tracks?${params.toString()}`)
+}
+
+export async function fetchBiliUpProfile(mid: number): Promise<BiliUpProfile> {
+  return apiRequest<BiliUpProfile>(`/api/bili/users/${mid}/profile`)
+}
+
+export async function fetchBiliUpTracks(
+  mid: number,
+  page = 1,
+  pageSize = 20,
+  order: 'pubdate' | 'click' = 'pubdate'
+): Promise<BiliUpTracksResult> {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+    order,
+  })
+  return apiRequest<BiliUpTracksResult>(`/api/bili/users/${mid}/tracks?${params.toString()}`)
+}
+
+export async function fetchSettings(): Promise<AppSettings> {
+  return apiRequest<AppSettings>('/api/settings')
+}
+
+export async function updateSettings(payload: Partial<AppSettings>): Promise<AppSettings> {
+  return apiRequest<AppSettings>('/api/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
 export async function importBiliFavoriteToPlaylist(

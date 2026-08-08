@@ -4,14 +4,17 @@ import {
   addLikeTrack,
   addPlaylistItemsRemote,
   addRecentTrack,
+  createCollectionRemote,
   clearRecentTracks,
   createPlaylistRemote,
   deletePlaylistRemote,
   fetchLikes,
   fetchPlaylists,
   fetchRecent,
+  replacePlaylistItemsRemote,
   removeLikeTrack,
   removeRecentTrack,
+  updatePlaylistRemote,
 } from '@/api/client'
 import type { Playlist, Track } from '@/types'
 
@@ -159,15 +162,21 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
-  function addRecent(track: Track) {
+  function addRecent(
+    track: Track,
+    playback: { positionMs?: number; listenMs?: number; completed?: boolean } = {}
+  ) {
     const current = recent.value.find((t) => isSameTrack(t, track))
     const nextTrack: Track = {
       ...track,
       recentPlayCount: (current?.recentPlayCount ?? 0) + 1,
+      positionMs: playback.positionMs ?? current?.positionMs ?? 0,
+      listenMs: Math.max(playback.listenMs ?? 0, current?.listenMs ?? 0),
+      completed: playback.completed ?? current?.completed ?? false,
     }
     recent.value = [nextTrack, ...recent.value.filter((t) => !isSameTrack(t, track))].slice(0, RECENT_LIMIT)
     if (backendAvailable.value) {
-      void addRecentTrack(track).catch(handleBackgroundError)
+      void addRecentTrack(track, playback).catch(handleBackgroundError)
     }
   }
 
@@ -207,11 +216,22 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  function moveLikeItem(from: number, to: number) {
+    const len = likes.value.length
+    if (from < 0 || from >= len || to < 0 || to >= len || from === to) return
+    const nextLikes = [...likes.value]
+    const [moved] = nextLikes.splice(from, 1)
+    nextLikes.splice(to, 0, moved)
+    likes.value = nextLikes
+  }
+
   function createPlaylist(name: string, tracks: Track[] = []): Playlist {
     const playlist: Playlist = {
       id: `pl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       name,
       cover: tracks[0]?.cover ?? null,
+      sourceType: 'user-created',
+      sourceBvid: null,
       tracks,
       createdAt: Date.now(),
     }
@@ -219,6 +239,34 @@ export const useLibraryStore = defineStore('library', () => {
 
     if (backendAvailable.value) {
       void createPlaylistRemote(name, tracks)
+        .then((remote) => {
+          playlists.value = playlists.value.map((item) => (item.id === playlist.id ? remote : item))
+        })
+        .catch(handleBackgroundError)
+    }
+
+    return playlist
+  }
+
+  function createCollection(
+    name: string,
+    tracks: Track[] = [],
+    sourceType: Playlist['sourceType'] = 'user-created',
+    sourceBvid?: string | null
+  ): Playlist {
+    const playlist: Playlist = {
+      id: `pl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      cover: tracks[0]?.cover ?? null,
+      sourceType,
+      sourceBvid: sourceBvid ?? null,
+      tracks,
+      createdAt: Date.now(),
+    }
+    playlists.value = [playlist, ...playlists.value]
+
+    if (backendAvailable.value) {
+      void createCollectionRemote(name, tracks, sourceType, sourceBvid, playlist.cover)
         .then((remote) => {
           playlists.value = playlists.value.map((item) => (item.id === playlist.id ? remote : item))
         })
@@ -250,6 +298,46 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  function addTracksToPlaylist(id: string, tracks: Track[]) {
+    const playlist = playlists.value.find((p) => p.id === id)
+    if (!playlist || tracks.length === 0) return
+    const toAdd = tracks.filter((track) => !playlist.tracks.some((existing) => isSameTrack(existing, track)))
+    if (toAdd.length === 0) return
+    playlist.tracks.push(...toAdd)
+    if (!playlist.cover) playlist.cover = toAdd[0]?.cover ?? null
+    if (backendAvailable.value) {
+      void addPlaylistItemsRemote(id, toAdd).catch(handleBackgroundError)
+    }
+  }
+
+  function updatePlaylist(id: string, payload: { name?: string; cover?: string | null }) {
+    const playlist = playlists.value.find((p) => p.id === id)
+    if (!playlist) return
+    if (payload.name !== undefined) playlist.name = payload.name
+    if (payload.cover !== undefined) playlist.cover = payload.cover
+    if (backendAvailable.value) {
+      void updatePlaylistRemote(id, payload)
+        .then((remote) => {
+          playlists.value = playlists.value.map((item) => (item.id === id ? remote : item))
+        })
+        .catch(handleBackgroundError)
+    }
+  }
+
+  function replacePlaylistTracks(id: string, tracks: Track[]) {
+    const playlist = playlists.value.find((p) => p.id === id)
+    if (!playlist) return
+    playlist.tracks = [...tracks]
+    playlist.cover = tracks[0]?.cover ?? null
+    if (backendAvailable.value) {
+      void replacePlaylistItemsRemote(id, tracks)
+        .then((result) => {
+          playlists.value = playlists.value.map((item) => (item.id === id ? result.playlist : item))
+        })
+        .catch(handleBackgroundError)
+    }
+  }
+
   function hasPlaylistTrack(id: string, track: Track): boolean {
     const playlist = playlists.value.find((p) => p.id === id)
     return !!playlist && playlist.tracks.some((t) => isSameTrack(t, track))
@@ -271,7 +359,13 @@ export const useLibraryStore = defineStore('library', () => {
     const tasks: Array<() => Promise<unknown>> = [
       ...recentToPush.map((track) => () => addRecentTrack(track)),
       ...likesToPush.map((track) => () => addLikeTrack(track)),
-      ...playlistsToPush.map((playlist) => () => createPlaylistRemote(playlist.name, playlist.tracks)),
+      ...playlistsToPush.map((playlist) => () => createCollectionRemote(
+        playlist.name,
+        playlist.tracks,
+        playlist.sourceType ?? 'user-created',
+        playlist.sourceBvid ?? null,
+        playlist.cover ?? null
+      )),
     ]
     await runWithConcurrency(tasks, MIGRATION_CONCURRENCY)
 
@@ -328,10 +422,15 @@ export const useLibraryStore = defineStore('library', () => {
     isLiked,
     isTrackLiked,
     toggleLike,
+    moveLikeItem,
     createPlaylist,
+    createCollection,
     removePlaylist,
     getPlaylist,
     addToPlaylist,
+    addTracksToPlaylist,
+    updatePlaylist,
+    replacePlaylistTracks,
     hasPlaylistTrack,
   }
 })

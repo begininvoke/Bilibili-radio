@@ -25,35 +25,65 @@
         </header>
 
         <div class="drawer-body">
-          <ul v-if="player.queue.length > 0" class="queue-list">
-            <li
-              v-for="(item, i) in player.queue"
-              :key="item.trackId ?? `${item.bvid}:${item.cid ?? i}`"
-              class="queue-item"
-              :class="{ active: i === player.currentIndex }"
-              @dblclick="player.playAt(i)"
+          <label v-if="player.queue.length > 0" class="local-search">
+            <AppIcon name="search" :size="16" />
+            <input v-model="query" type="search" placeholder="搜索播放队列" />
+            <button v-if="query" type="button" title="清空搜索" @click="query = ''">
+              <AppIcon name="close" :size="14" />
+            </button>
+          </label>
+
+          <div v-if="filteredQueue.length > 0" class="queue-list">
+            <div
+              v-for="item in filteredQueue"
+              :key="item.track.trackId ?? `${item.track.bvid}:${item.track.cid ?? item.queueIndex}`"
+              class="queue-row"
+              :data-queue-index="item.queueIndex"
+              :class="{
+                current: item.queueIndex === player.currentIndex,
+                playing: player.isPlaying && item.queueIndex === player.currentIndex,
+                dragging: dragIndex === item.queueIndex,
+                'drop-target': dropIndex === item.queueIndex && dragIndex !== item.queueIndex,
+              }"
             >
-              <div class="q-index">
-                <PlayingBars v-if="i === player.currentIndex && player.isPlaying" />
-                <span v-else>{{ i + 1 }}</span>
-              </div>
-              <div class="q-main" @click="player.playAt(i)">
-                <div class="q-title" :class="{ current: i === player.currentIndex }" :title="item.title">
-                  {{ item.title }}
-                </div>
-                <div class="q-owner">{{ item.owner }}</div>
-              </div>
-              <span class="q-duration">{{ formatDuration(item.duration) }}</span>
-              <button class="q-remove" title="从队列移除" @click.stop="player.removeFromQueue(i)">
-                <AppIcon name="close" :size="14" />
+              <span
+                class="drag-handle"
+                title="拖动排序"
+                role="button"
+                tabindex="0"
+                @pointerdown="startReorder(item.queueIndex, $event)"
+              >
+                ☰
+              </span>
+              <button class="queue-main" type="button" @click="player.playAt(item.queueIndex)">
+                <span class="queue-index">{{ item.queueIndex + 1 }}</span>
+                <span class="queue-title" :title="item.track.title">{{ item.track.title }}</span>
+                <span v-if="item.track.duration" class="queue-duration">{{ formatTime(item.track.duration) }}</span>
               </button>
-            </li>
-          </ul>
+              <button
+                class="row-icon"
+                type="button"
+                :title="library.isTrackLiked(item.track) ? '取消喜欢' : '喜欢'"
+                :class="{ liked: library.isTrackLiked(item.track) }"
+                @click="library.toggleLike(item.track)"
+              >
+                <AppIcon :name="library.isTrackLiked(item.track) ? 'heart-filled' : 'heart'" :size="16" />
+              </button>
+              <button class="row-icon" type="button" title="从队列移除" @click="player.removeFromQueue(item.queueIndex)">
+                <AppIcon name="close" :size="16" />
+              </button>
+            </div>
+          </div>
 
           <EmptyState
-            v-else
+            v-else-if="player.queue.length === 0"
             title="队列还是空的"
             description="在搜索或收藏夹里双击一首，就会出现在这里"
+          />
+          <EmptyState
+            v-else
+            title="没有匹配的队列曲目"
+            description="换个标题、UP 或 BV 号试试"
           />
         </div>
       </aside>
@@ -62,15 +92,46 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { usePlayerStore } from '@/stores/playerStore'
+import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
-import { formatDuration } from '@/utils/format'
+import { usePointerReorder } from '@/composables/usePointerReorder'
+import type { Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
-import PlayingBars from '@/components/base/PlayingBars.vue'
 import EmptyState from '@/components/base/EmptyState.vue'
 
 const player = usePlayerStore()
+const library = useLibraryStore()
 const ui = useUiStore()
+const query = ref('')
+const { dragIndex, dropIndex, startReorder } = usePointerReorder({
+  dataAttribute: 'data-queue-index',
+  onMove: (from, to) => player.moveQueueItem(from, to),
+})
+
+const filteredQueue = computed(() => {
+  const keyword = query.value.trim().toLowerCase()
+  return player.queue
+    .map((track, queueIndex) => ({ track, queueIndex }))
+    .filter((item) => !keyword || matchesTrack(item.track, keyword))
+})
+
+function matchesTrack(track: Track, keyword: string): boolean {
+  return [
+    track.title,
+    track.owner,
+    track.bvid,
+    track.pageTitle ?? '',
+  ].some((value) => value.toLowerCase().includes(keyword))
+}
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+}
 </script>
 
 <style scoped>
@@ -170,91 +231,142 @@ const ui = useUiStore()
   padding: 8px;
 }
 
-.queue-list {
-  list-style: none;
-}
-
-.queue-item {
-  display: grid;
-  grid-template-columns: 28px 1fr auto 24px;
-  align-items: center;
-  gap: 10px;
-  height: 56px;
-  padding: 0 10px;
-  border-radius: var(--radius-small);
-  cursor: default;
-  transition: background 160ms ease;
-}
-
-.queue-item:hover {
-  background: var(--color-bg-hover);
-}
-
-.queue-item.active {
-  background: var(--color-primary-soft);
-}
-
-.q-index {
+.local-search {
+  height: 36px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 12px;
+  gap: 8px;
+  margin: 2px 4px 8px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-app);
   color: var(--color-text-tertiary);
-  font-variant-numeric: tabular-nums;
 }
 
-.q-main {
+.local-search input {
+  flex: 1;
   min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.local-search button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
   cursor: pointer;
 }
 
-.q-title {
-  font-size: 13px;
-  color: var(--color-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.q-title.current {
+.local-search button:hover {
+  background: var(--color-bg-hover);
   color: var(--color-primary);
 }
 
-.q-owner {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 2px;
-}
-
-.q-duration {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
-.q-remove {
-  width: 24px;
-  height: 24px;
+.queue-list {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.queue-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 30px 30px;
   align-items: center;
-  justify-content: center;
+  gap: 2px;
+  border-radius: var(--radius-small);
+  color: var(--color-text-primary);
+  transition: background 160ms ease, opacity 160ms ease;
+}
+
+.queue-row:hover,
+.queue-row.current {
+  background: var(--color-bg-hover);
+}
+
+.queue-row.playing .queue-title {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.queue-row.dragging {
+  opacity: 0.55;
+}
+
+.queue-row.drop-target {
+  background: var(--color-primary-soft);
+}
+
+.drag-handle {
+  width: 26px;
+  height: 42px;
+  display: grid;
+  place-items: center;
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
-  border-radius: 50%;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.queue-main {
+  min-width: 0;
+  height: 42px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 160ms ease, background 160ms ease;
 }
 
-.queue-item:hover .q-remove {
-  opacity: 1;
+.queue-index,
+.queue-duration {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
 }
 
-.q-remove:hover {
+.queue-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.row-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.row-icon:hover,
+.row-icon.liked {
   background: var(--color-bg-hover);
   color: var(--color-primary);
 }

@@ -175,7 +175,7 @@ class RecommendationService:
         if rating:
             score += rating * 8
             mood = str(row["review_mood"] or "").strip()
-            signals.insert(0, f"你给过 {rating} 星" + (f"，情绪是「{mood}」" if mood else ""))
+            signals.insert(0, f"你给过 {rating} 星" + (f"，标签是「{mood}」" if mood else ""))
             if row["review_note"]:
                 score += 5
 

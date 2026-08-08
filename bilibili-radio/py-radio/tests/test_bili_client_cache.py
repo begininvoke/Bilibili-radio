@@ -187,6 +187,40 @@ class WbiSession(CountingSession):
                     },
                 }
             )
+        if url == APIConst.SPACE_INFO_URL:
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "mid": int(params["mid"]),
+                        "name": "Space UP",
+                        "face": "//i0.hdslb.com/face.jpg",
+                        "sign": "profile sign",
+                    },
+                }
+            )
+        if url == APIConst.SPACE_ARCHIVE_URL:
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "list": {
+                            "vlist": [
+                                {
+                                    "bvid": VALID_BVID,
+                                    "title": "Space Track",
+                                    "pic": "//i0.hdslb.com/cover.jpg",
+                                    "length": "03:00",
+                                    "play": 100,
+                                    "created": 1784541600,
+                                }
+                            ],
+                            "tlist": {},
+                        },
+                        "page": {"count": 1},
+                    },
+                }
+            )
         if url == self.subtitle_url:
             return FakeResponse({"body": self.subtitle_lines or []})
         return FakeResponse(
@@ -265,6 +299,20 @@ class BiliClientMetadataCacheTests(unittest.TestCase):
         self.assertEqual(payload["aid"], VALID_AID)
         self.assertEqual(session.nav_calls, 1)
         self.assertEqual(session.player_calls, 1)
+
+    def test_space_profile_and_archives_use_instance_wbi_client(self):
+        client = BiliClient()
+        session = WbiSession()
+        client.session = session
+
+        profile = client.get_user_profile(12345)
+        archive = client.list_user_tracks(12345, page=1, page_size=20)
+
+        self.assertEqual(profile["mid"], 12345)
+        self.assertEqual(profile["name"], "Space UP")
+        self.assertEqual(archive["tracks"][0]["ownerMid"], 12345)
+        self.assertIn(APIConst.SPACE_INFO_URL, [call[0] for call in session.calls])
+        self.assertIn(APIConst.SPACE_ARCHIVE_URL, [call[0] for call in session.calls])
 
     def test_signature_rejection_is_not_retried_more_than_once(self):
         client = BiliClient()

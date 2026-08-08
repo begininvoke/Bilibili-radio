@@ -13,15 +13,16 @@ from models import Track, make_track_id, normalize_bvid
 
 _TRACK_UPSERT_SQL = """
     INSERT INTO tracks (
-        track_id, bvid, cid, title, owner, cover, duration, play_count,
+        track_id, bvid, cid, title, owner, owner_mid, cover, duration, play_count,
         published_at, page, page_title, source, raw_json, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(track_id) DO UPDATE SET
         bvid = excluded.bvid,
         cid = excluded.cid,
         title = excluded.title,
         owner = excluded.owner,
+        owner_mid = excluded.owner_mid,
         cover = excluded.cover,
         duration = excluded.duration,
         play_count = excluded.play_count,
@@ -278,8 +279,8 @@ class LibraryService:
         normalized_mood = (mood or "").strip()
         if not normalized_mood:
             raise APIError.validation_error("review mood is required")
-        if len(normalized_mood) > 32:
-            raise APIError.validation_error("review mood is too long")
+        if len(normalized_mood) > 4:
+            raise APIError.validation_error("review label must be at most 4 characters")
         normalized_note = (note or "").strip()
         if len(normalized_note) > 1000:
             raise APIError.validation_error("review note is too long")
@@ -380,20 +381,43 @@ class LibraryService:
         return self._playlist_payload(playlist, item_rows)
 
     def create_playlist(self, name: str, tracks: Optional[list[Track]] = None) -> dict[str, Any]:
+        return self.create_collection(name, tracks=tracks)
+
+    def create_collection(
+        self,
+        name: str,
+        tracks: Optional[list[Track]] = None,
+        source_type: str = "user-created",
+        source_bvid: Optional[str] = None,
+        cover: Optional[str] = None,
+    ) -> dict[str, Any]:
         name = (name or "").strip()
         if not name:
             raise APIError.validation_error("playlist name is required")
+        source_type = self._normalize_source_type(source_type)
 
         playlist_id = f"pl_{uuid.uuid4().hex[:12]}"
         now = utc_now()
-        cover = tracks[0].cover if tracks else None
+        resolved_cover = cover if cover is not None else (tracks[0].cover if tracks else None)
         with get_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO playlists (user_id, id, name, cover, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO playlists (
+                    user_id, id, name, cover, source_type, source_bvid,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (self.user_id, playlist_id, name, cover, now, now),
+                (
+                    self.user_id,
+                    playlist_id,
+                    name,
+                    resolved_cover,
+                    source_type,
+                    source_bvid,
+                    now,
+                    now,
+                ),
             )
         if tracks:
             self.batch_add_playlist_items(playlist_id, tracks=tracks)
@@ -446,6 +470,72 @@ class LibraryService:
         track_ids: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         return self._batch_playlist_items(playlist_id, tracks or [], track_ids or [], write=True)
+
+    def replace_playlist_items(self, playlist_id: str, tracks: list[Track]) -> dict[str, Any]:
+        normalized: list[Track] = []
+        seen: set[str] = set()
+        unavailable = 0
+        duplicated = 0
+        for track in tracks:
+            if not track.track_id or not track.bvid or not track.title:
+                unavailable += 1
+                continue
+            if track.track_id in seen:
+                duplicated += 1
+                continue
+            seen.add(track.track_id)
+            normalized.append(track)
+
+        now = utc_now()
+        with get_connection(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            playlist = conn.execute(
+                "SELECT 1 FROM playlists WHERE user_id = ? AND id = ?",
+                (self.user_id, playlist_id),
+            ).fetchone()
+            if not playlist:
+                raise APIError.not_found(f"Playlist not found: {playlist_id}")
+            conn.executemany(
+                _TRACK_UPSERT_SQL,
+                [self._track_upsert_values(track, None, now) for track in normalized],
+            )
+            conn.execute(
+                "DELETE FROM playlist_items WHERE user_id = ? AND playlist_id = ?",
+                (self.user_id, playlist_id),
+            )
+            conn.executemany(
+                """
+                INSERT INTO playlist_items (
+                    user_id, playlist_id, track_id, position, added_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (self.user_id, playlist_id, track.track_id, position, now)
+                    for position, track in enumerate(normalized)
+                ],
+            )
+            conn.execute(
+                """
+                UPDATE playlists
+                SET cover = ?, updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    normalized[0].cover if normalized else None,
+                    now,
+                    self.user_id,
+                    playlist_id,
+                ),
+            )
+
+        return {
+            "playlist": self.get_playlist(playlist_id),
+            "total": len(tracks),
+            "replaced": len(normalized),
+            "duplicated": duplicated,
+            "unavailable": unavailable,
+        }
 
     def _batch_playlist_items(
         self,
@@ -580,6 +670,8 @@ class LibraryService:
             "id": playlist["id"],
             "name": playlist["name"],
             "cover": playlist["cover"],
+            "sourceType": playlist["source_type"] if "source_type" in playlist.keys() else "user-created",
+            "sourceBvid": playlist["source_bvid"] if "source_bvid" in playlist.keys() else None,
             "tracks": tracks,
             "createdAt": playlist["created_at"],
             "updatedAt": playlist["updated_at"],
@@ -602,6 +694,7 @@ class LibraryService:
             track.cid,
             track.title,
             track.owner,
+            track.owner_mid,
             track.cover,
             track.duration,
             track.play_count,
@@ -621,6 +714,7 @@ class LibraryService:
             cid=row["cid"],
             title=row["title"],
             owner=row["owner"],
+            owner_mid=row["owner_mid"] if "owner_mid" in row.keys() else None,
             cover=row["cover"],
             duration=row["duration"],
             play_count=row["play_count"],
@@ -655,3 +749,11 @@ class LibraryService:
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
+
+    @staticmethod
+    def _normalize_source_type(source_type: str) -> str:
+        normalized = (source_type or "user-created").strip()
+        allowed = {"user-created", "bilibili-multipage", "bilibili-favorite"}
+        if normalized not in allowed:
+            raise APIError.validation_error("invalid playlist sourceType")
+        return normalized

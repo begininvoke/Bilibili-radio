@@ -20,6 +20,9 @@ const LYRICS_UPDATE_EVENT: &str = "desktop-lyrics:update";
 const LYRICS_WINDOW_WIDTH: f64 = 920.0;
 const LYRICS_WINDOW_HEIGHT: f64 = 112.0;
 const LYRICS_WINDOW_BOTTOM_MARGIN: i32 = 96;
+const DEFAULT_LYRICS_FONT_SIZE: u32 = 30;
+const MIN_LYRICS_FONT_SIZE: u32 = 22;
+const MAX_LYRICS_FONT_SIZE: u32 = 48;
 
 struct BackendState {
     endpoint: Mutex<Option<String>>,
@@ -32,7 +35,11 @@ struct LyricsPayload {
     enabled: bool,
     text: String,
     color: String,
+    #[serde(rename = "fontSize")]
+    font_size: u32,
     title: String,
+    #[serde(rename = "isPlaying")]
+    is_playing: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -187,7 +194,9 @@ fn set_lyrics_window_payload(
     enabled: bool,
     text: String,
     color: String,
+    font_size: u32,
     title: String,
+    is_playing: bool,
 ) -> Result<LyricsWindowDebug, String> {
     let mut debug = LyricsWindowDebug::new("set_lyrics_window_payload", Some(enabled), &app);
     log_desktop_lyrics_debug(&format!(
@@ -198,7 +207,9 @@ fn set_lyrics_window_payload(
         enabled,
         text: normalized_lyrics_text(text),
         color: normalized_lyrics_color(color),
+        font_size: normalized_lyrics_font_size(font_size),
         title,
+        is_playing,
     };
     *state
         .lyrics_payload
@@ -539,12 +550,18 @@ fn normalized_lyrics_color(color: String) -> String {
     }
 }
 
+fn normalized_lyrics_font_size(font_size: u32) -> u32 {
+    font_size.clamp(MIN_LYRICS_FONT_SIZE, MAX_LYRICS_FONT_SIZE)
+}
+
 fn default_lyrics_payload() -> LyricsPayload {
     LyricsPayload {
         enabled: false,
         text: "-".to_string(),
         color: "#fb7299".to_string(),
+        font_size: DEFAULT_LYRICS_FONT_SIZE,
         title: String::new(),
+        is_playing: false,
     }
 }
 

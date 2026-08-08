@@ -116,7 +116,7 @@ class TenantIsolationTests(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
 
-        self.assertEqual(version, 6)
+        self.assertEqual(version, 7)
         self.assertEqual(owner["role"], "admin")
         self.assertEqual(owner["role_source"], "bootstrap")
         self.assertEqual(violations, [])
@@ -153,8 +153,8 @@ class TenantIsolationTests(unittest.TestCase):
 
         settings_a = SettingsService(self.db_path, user_id="user-a")
         settings_b = SettingsService(self.db_path, user_id="user-b")
-        settings_a.set_audio_quality_preference("high")
-        self.assertEqual(settings_a.get_audio_quality_preference(), "high")
+        settings_a.set_audio_quality_preference("192k")
+        self.assertEqual(settings_a.get_audio_quality_preference(), "192k")
         self.assertEqual(settings_b.get_audio_quality_preference(), "auto")
 
         playback_a = PlaybackService(self.db_path, user_id="user-a")

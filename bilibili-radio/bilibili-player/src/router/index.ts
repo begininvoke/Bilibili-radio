@@ -1,10 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 
-if (window.location.pathname === '/admin/genshin' && !window.location.hash) {
-  window.history.replaceState(null, '', `/#/admin/genshin${window.location.search}`)
-}
-
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -41,6 +37,16 @@ const router = createRouter({
       component: () => import('@/views/PlaylistDetailView.vue'),
     },
     {
+      path: '/up/resolve/:bvid',
+      name: 'up-resolve',
+      component: () => import('@/views/UpProfileView.vue'),
+    },
+    {
+      path: '/up/:mid',
+      name: 'up',
+      component: () => import('@/views/UpProfileView.vue'),
+    },
+    {
       path: '/recent',
       name: 'recent',
       component: () => import('@/views/RecentView.vue'),
@@ -49,17 +55,6 @@ const router = createRouter({
       path: '/likes',
       name: 'likes',
       component: () => import('@/views/LikesView.vue'),
-    },
-    {
-      path: '/admin',
-      name: 'admin',
-      component: () => import('@/views/AdminView.vue'),
-      meta: { requiresAdmin: true },
-    },
-    {
-      path: '/admin/genshin',
-      name: 'admin-genshin',
-      component: () => import('@/views/GenshinRoleView.vue'),
     },
     {
       path: '/desktop-lyrics',
@@ -91,10 +86,6 @@ router.beforeEach(async (to) => {
   if (!auth.appAuthenticated) {
     auth.loginWithOidc()
     return false
-  }
-
-  if (to.meta.requiresAdmin && !auth.isAdmin) {
-    return { name: 'home', query: { denied: 'admin' } }
   }
 
   return true

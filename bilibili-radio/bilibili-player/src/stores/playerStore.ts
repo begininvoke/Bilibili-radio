@@ -7,26 +7,42 @@ import type {
   Track,
   PlayerQueueSnapshot,
   TrackSubtitleLine,
+  AudioQualityPreference,
 } from '@/types'
 import {
   apiUrl,
   downloadTrackToLocalFile,
+  fetchSettings,
   fetchPlayerQueue,
+  getTrackDetail,
   getTrackCoverInfo,
   getTrackSubtitles,
   getTrackStreamInfo,
   resolveTrackInput,
   savePlayerQueue,
+  updateSettings,
 } from '@/api/client'
 import { streamingAudioPlayer } from '@/audio/StreamingAudioPlayer'
 import { useLibraryStore } from '@/stores/libraryStore'
 
 const PLAY_MODES: PlayMode[] = ['order', 'loop', 'single', 'shuffle']
+const AUDIO_QUALITIES: AudioQualityPreference[] = ['auto', '64k', '132k', '192k', 'dolby', 'hires']
+const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const QUEUE_STORAGE_KEY = 'bili-radio:player-queue'
+const SETTINGS_STORAGE_KEY = 'bili-radio:player-settings'
 const QUEUE_SAVE_DEBOUNCE_MS = 300
+const RECENT_RECORD_RATIO = 0.8
 
 function isPlayMode(value: unknown): value is PlayMode {
   return typeof value === 'string' && PLAY_MODES.includes(value as PlayMode)
+}
+
+function isAudioQuality(value: unknown): value is AudioQualityPreference {
+  return typeof value === 'string' && AUDIO_QUALITIES.includes(value as AudioQualityPreference)
+}
+
+function isPlaybackSpeed(value: unknown): value is number {
+  return typeof value === 'number' && PLAYBACK_SPEEDS.includes(value)
 }
 
 function loadQueueSnapshot(): PlayerQueueSnapshot {
@@ -48,6 +64,20 @@ function loadQueueSnapshot(): PlayerQueueSnapshot {
   }
 }
 
+function loadSettingsSnapshot(): { audioQualityPreference: AudioQualityPreference; playbackSpeed: number } {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    const playbackSpeed = Number(parsed.playbackSpeed)
+    return {
+      audioQualityPreference: isAudioQuality(parsed.audioQualityPreference) ? parsed.audioQualityPreference : 'auto',
+      playbackSpeed: isPlaybackSpeed(playbackSpeed) ? playbackSpeed : 1,
+    }
+  } catch {
+    return { audioQualityPreference: 'auto', playbackSpeed: 1 }
+  }
+}
+
 function isValidTrack(value: unknown): value is Track {
   const track = value as Track
   return !!track && typeof track.bvid === 'string' && typeof track.title === 'string'
@@ -61,6 +91,7 @@ function clampQueueIndex(index: number, queueLength: number): number {
 
 export const usePlayerStore = defineStore('player', () => {
   const initialQueueSnapshot = loadQueueSnapshot()
+  const initialSettingsSnapshot = loadSettingsSnapshot()
   const status = ref<PlayerStatus>('idle')
   const currentTime = ref(0)
   const duration = ref(0)
@@ -76,6 +107,12 @@ export const usePlayerStore = defineStore('player', () => {
   const subtitleTrackKey = ref('')
   const subtitleLoading = ref(false)
   const subtitleError = ref<string | null>(null)
+  const playRequestSerial = ref(0)
+  const audioQualityPreference = ref<AudioQualityPreference>(initialSettingsSnapshot.audioQualityPreference)
+  const availableAudioQualities = ref<AudioQualityPreference[]>(['auto'])
+  const playbackSpeed = ref(initialSettingsSnapshot.playbackSpeed)
+  const settingsBackendAvailable = ref(false)
+  const settingsSyncError = ref<string | null>(null)
 
   // 播放队列
   const queue = ref<Track[]>(initialQueueSnapshot.queue)
@@ -90,6 +127,12 @@ export const usePlayerStore = defineStore('player', () => {
   let queueRestored = false
   let suppressQueueRemoteSync = false
   let subtitleSeq = 0
+  let shuffleHistory: number[] = []
+  let shuffleFuture: number[] = []
+  let playbackRecentKey: string | null = null
+  let playbackRecentRecorded = false
+  let playbackListenSeconds = 0
+  let playbackLastPosition: number | null = null
 
   const currentTrack = computed<Track | null>(() => {
     if (currentIndex.value < 0 || currentIndex.value >= queue.value.length) return null
@@ -258,10 +301,12 @@ export const usePlayerStore = defineStore('player', () => {
     })
 
     streamingAudioPlayer.onTimeUpdate((time, dur) => {
+      accumulatePlaybackListenTime(time)
       currentTime.value = time
       if (dur > 0 && dur !== duration.value) {
         duration.value = dur
       }
+      maybeRecordRecentProgress(false)
     })
 
     streamingAudioPlayer.onEnded(() => {
@@ -277,8 +322,38 @@ export const usePlayerStore = defineStore('player', () => {
     })
 
     streamingAudioPlayer.setVolume(volume.value)
+    streamingAudioPlayer.setPlaybackRate(playbackSpeed.value)
+    void restorePersistedSettings()
 
     isInitialized.value = true
+  }
+
+  async function restorePersistedSettings() {
+    try {
+      const settings = await fetchSettings()
+      settingsBackendAvailable.value = true
+      settingsSyncError.value = null
+      audioQualityPreference.value = isAudioQuality(settings.audioQualityPreference)
+        ? settings.audioQualityPreference
+        : audioQualityPreference.value
+      playbackSpeed.value = isPlaybackSpeed(Number(settings.playbackSpeed)) ? Number(settings.playbackSpeed) : 1
+      saveSettingsSnapshotLocal()
+      streamingAudioPlayer.setPlaybackRate(playbackSpeed.value)
+    } catch (error) {
+      settingsBackendAvailable.value = false
+      settingsSyncError.value = error instanceof Error ? error.message : 'settings sync failed'
+      streamingAudioPlayer.setPlaybackRate(playbackSpeed.value)
+    }
+  }
+
+  function saveSettingsSnapshotLocal() {
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        audioQualityPreference: audioQualityPreference.value,
+        playbackSpeed: playbackSpeed.value,
+      })
+    )
   }
 
   function setError(message: string) {
@@ -292,10 +367,15 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function requestPlayTrack(track: Track) {
     const seq = ++playSeq
+    playRequestSerial.value = seq
     clearError()
     status.value = 'loading'
     statusMessage.value = '正在获取视频信息...'
     currentTime.value = 0
+    playbackRecentKey = null
+    playbackRecentRecorded = false
+    playbackListenSeconds = 0
+    playbackLastPosition = null
     clearCurrentSubtitles()
     streamingAudioPlayer.stop()
 
@@ -308,8 +388,9 @@ export const usePlayerStore = defineStore('player', () => {
       duration.value = track.duration
       statusMessage.value = '正在解析音频流...'
 
-      const streamInfo = await getTrackStreamInfo(track.bvid, track.cid)
+      const streamInfo = await getTrackStreamInfo(track.bvid, track.cid, audioQualityPreference.value)
       if (seq !== playSeq) return
+      availableAudioQualities.value = normalizeAvailableQualities(streamInfo.availableAudioQualities)
 
       const resolvedCid = streamInfo.cid ?? track.cid
       const playableTrack: Track = {
@@ -321,11 +402,14 @@ export const usePlayerStore = defineStore('player', () => {
       syncQueueCurrentTrack(playableTrack)
       videoInfo.value = trackToVideoInfo(playableTrack)
       duration.value = playableTrack.duration
+      playbackRecentKey = trackIdentity(playableTrack)
+      playbackRecentRecorded = false
+      playbackListenSeconds = 0
+      playbackLastPosition = null
 
       statusMessage.value = '正在缓冲音频...'
       streamingAudioPlayer.loadStream(streamInfo)
-      useLibraryStore().addRecent(playableTrack)
-      hydrateTrackCoverInBackground(playableTrack, seq)
+      hydrateTrackMetadataInBackground(playableTrack, seq)
     } catch (error) {
       if (seq !== playSeq) return
       setError(error instanceof Error ? error.message : '播放失败')
@@ -344,15 +428,8 @@ export const usePlayerStore = defineStore('player', () => {
     statusMessage.value = '正在解析输入...'
     try {
       const detail = await resolveTrackInput(value)
-      const track = detail.pages[0] ?? detail.track
-      const idx = findTrackIndex(track)
-      if (idx >= 0) {
-        currentIndex.value = idx
-      } else {
-        queue.value.push(track)
-        currentIndex.value = queue.value.length - 1
-      }
-      await requestPlayTrack(track)
+      const tracks = detail.pages.length > 1 ? detail.pages : [detail.pages[0] ?? detail.track]
+      playList(tracks, 0)
     } catch (error) {
       setError(error instanceof Error ? error.message : '无法解析输入')
     }
@@ -365,8 +442,10 @@ export const usePlayerStore = defineStore('player', () => {
       currentIndex.value = idx
     } else {
       queue.value.push(track)
+      resetShuffleFutureAfterQueueChange()
       currentIndex.value = queue.value.length - 1
     }
+    markShuffleManualSelection(currentIndex.value)
     void requestPlayTrack(track)
   }
 
@@ -375,6 +454,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (tracks.length === 0) return
     queue.value = [...tracks]
     currentIndex.value = Math.max(0, Math.min(startIndex, tracks.length - 1))
+    resetShuffleState()
     void requestPlayTrack(queue.value[currentIndex.value])
   }
 
@@ -382,15 +462,29 @@ export const usePlayerStore = defineStore('player', () => {
   function enqueue(track: Track) {
     if (queue.value.some((t) => isSameTrack(t, track))) return
     queue.value.push(track)
+    resetShuffleFutureAfterQueueChange()
     if (currentIndex.value === -1) {
       currentIndex.value = 0
       void requestPlayTrack(track)
     }
   }
 
+  function enqueueTracks(tracks: Track[]) {
+    const toAdd = tracks.filter((track) => !queue.value.some((candidate) => isSameTrack(candidate, track)))
+    if (toAdd.length === 0) return
+    const shouldStart = currentIndex.value === -1
+    queue.value.push(...toAdd)
+    resetShuffleFutureAfterQueueChange()
+    if (shouldStart) {
+      currentIndex.value = queue.value.length - toAdd.length
+      void requestPlayTrack(queue.value[currentIndex.value])
+    }
+  }
+
   function playAt(index: number) {
     if (index < 0 || index >= queue.value.length) return
     currentIndex.value = index
+    markShuffleManualSelection(index)
     void requestPlayTrack(queue.value[index])
   }
 
@@ -408,12 +502,37 @@ export const usePlayerStore = defineStore('player', () => {
         syncRestoredCurrentTrack()
       }
     }
+    if (queue.value.length > 0) {
+      reindexShuffleStateAfterRemoval(index)
+    }
+  }
+
+  function moveQueueItem(from: number, to: number) {
+    const len = queue.value.length
+    if (from < 0 || from >= len || to < 0 || to >= len || from === to) return
+    const previousCurrentIndex = currentIndex.value
+    const nextQueue = [...queue.value]
+    const [moved] = nextQueue.splice(from, 1)
+    nextQueue.splice(to, 0, moved)
+    queue.value = nextQueue
+
+    if (previousCurrentIndex === from) {
+      currentIndex.value = to
+    } else if (from < previousCurrentIndex && previousCurrentIndex <= to) {
+      currentIndex.value = previousCurrentIndex - 1
+    } else if (to <= previousCurrentIndex && previousCurrentIndex < from) {
+      currentIndex.value = previousCurrentIndex + 1
+    } else {
+      currentIndex.value = previousCurrentIndex
+    }
+    resetShuffleState()
   }
 
   function clearQueue() {
     stop()
     queue.value = []
     currentIndex.value = -1
+    resetShuffleState()
   }
 
   function nextIndex(): number {
@@ -421,16 +540,20 @@ export const usePlayerStore = defineStore('player', () => {
     if (len === 0) return -1
     if (playMode.value === 'shuffle') {
       if (len === 1) return currentIndex.value
-      let n = currentIndex.value
-      while (n === currentIndex.value) {
-        n = Math.floor(Math.random() * len)
+      normalizeShuffleStateAfterQueueMutation()
+      if (shuffleFuture.length === 0) {
+        shuffleFuture = shuffledQueueIndices(currentIndex.value)
       }
-      return n
+      const next = shuffleFuture.shift()
+      if (next == null) return currentIndex.value
+      if (currentIndex.value >= 0 && currentIndex.value !== next) {
+        shuffleHistory.push(currentIndex.value)
+      }
+      return next
     }
     const next = currentIndex.value + 1
     if (next >= len) {
-      // order 模式到末尾停止，loop 模式回到开头
-      return playMode.value === 'loop' ? 0 : -1
+      return 0
     }
     return next
   }
@@ -440,11 +563,15 @@ export const usePlayerStore = defineStore('player', () => {
     if (len === 0) return -1
     if (playMode.value === 'shuffle') {
       if (len === 1) return currentIndex.value
-      let n = currentIndex.value
-      while (n === currentIndex.value) {
-        n = Math.floor(Math.random() * len)
+      normalizeShuffleStateAfterQueueMutation()
+      const previous = shuffleHistory.pop()
+      if (previous == null) {
+        return currentIndex.value
       }
-      return n
+      if (currentIndex.value >= 0 && currentIndex.value !== previous) {
+        shuffleFuture.unshift(currentIndex.value)
+      }
+      return previous
     }
     const prev = currentIndex.value - 1
     if (prev < 0) {
@@ -455,12 +582,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function next() {
     const n = nextIndex()
-    if (n === -1) {
-      // 顺序播放到底
-      status.value = 'idle'
-      currentTime.value = 0
-      return
-    }
+    if (n === -1) return
     playAt(n)
   }
 
@@ -476,6 +598,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function handleTrackEnded() {
+    maybeRecordRecentProgress(true)
     if (playMode.value === 'single') {
       // 单曲循环：重新播放当前曲目
       const track = currentTrack.value
@@ -487,13 +610,78 @@ export const usePlayerStore = defineStore('player', () => {
     next()
   }
 
+  function resetShuffleState() {
+    shuffleHistory = []
+    shuffleFuture = playMode.value === 'shuffle' ? shuffledQueueIndices(currentIndex.value) : []
+  }
+
+  function resetShuffleFutureAfterQueueChange() {
+    if (playMode.value !== 'shuffle') return
+    shuffleFuture = shuffledQueueIndices(currentIndex.value)
+  }
+
+  function normalizeShuffleStateAfterQueueMutation() {
+    const len = queue.value.length
+    if (len <= 0) {
+      shuffleHistory = []
+      shuffleFuture = []
+      return
+    }
+    const isValid = (index: number) => index >= 0 && index < len
+    shuffleHistory = shuffleHistory.filter(isValid)
+    shuffleFuture = dedupeIndices(shuffleFuture.filter((index) => isValid(index) && index !== currentIndex.value))
+  }
+
+  function reindexShuffleStateAfterRemoval(removedIndex: number) {
+    const reindex = (index: number) => {
+      if (index === removedIndex) return null
+      return index > removedIndex ? index - 1 : index
+    }
+    shuffleHistory = shuffleHistory
+      .map(reindex)
+      .filter((index): index is number => index !== null)
+    shuffleFuture = shuffleFuture
+      .map(reindex)
+      .filter((index): index is number => index !== null)
+    normalizeShuffleStateAfterQueueMutation()
+  }
+
+  function markShuffleManualSelection(index: number) {
+    if (playMode.value !== 'shuffle') return
+    shuffleFuture = shuffleFuture.filter((candidate) => candidate !== index)
+  }
+
+  function shuffledQueueIndices(excludeIndex: number): number[] {
+    const indices = queue.value
+      .map((_, index) => index)
+      .filter((index) => index !== excludeIndex)
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[indices[i], indices[j]] = [indices[j], indices[i]]
+    }
+    return indices
+  }
+
+  function dedupeIndices(indices: number[]): number[] {
+    const seen = new Set<number>()
+    const result: number[] = []
+    for (const index of indices) {
+      if (seen.has(index)) continue
+      seen.add(index)
+      result.push(index)
+    }
+    return result
+  }
+
   function cyclePlayMode() {
     const idx = PLAY_MODES.indexOf(playMode.value)
     playMode.value = PLAY_MODES[(idx + 1) % PLAY_MODES.length]
+    resetShuffleState()
   }
 
   function setPlayMode(mode: PlayMode) {
     playMode.value = mode
+    resetShuffleState()
   }
 
   function togglePlayPause() {
@@ -518,6 +706,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function stop() {
+    maybeRecordRecentProgress(false)
     playSeq++
     streamingAudioPlayer.stop()
     status.value = 'idle'
@@ -565,12 +754,12 @@ export const usePlayerStore = defineStore('player', () => {
     statusMessage.value = '正在下载音频...'
     try {
       if (isDesktopRuntime()) {
-        const result = await downloadTrackToLocalFile(fallbackTrack)
+        const result = await downloadTrackToLocalFile(fallbackTrack, audioQualityPreference.value)
         statusMessage.value = `已保存到 ${result.path}`
         return
       }
 
-      const streamInfo = await getTrackStreamInfo(fallbackTrack.bvid, fallbackTrack.cid)
+      const streamInfo = await getTrackStreamInfo(fallbackTrack.bvid, fallbackTrack.cid, audioQualityPreference.value)
       const response = await fetch(apiUrl(streamInfo.url))
       if (!response.ok) {
         throw new Error(`下载失败（${response.status}）`)
@@ -670,26 +859,48 @@ export const usePlayerStore = defineStore('player', () => {
     return candidate >= 0 && playbackTime < lines[candidate].to ? candidate : -1
   }
 
-  async function hydrateTrackCover(track: Track): Promise<Track> {
-    if (track.cid == null) return track
+  async function hydrateTrackMetadata(track: Track): Promise<Track> {
+    let nextTrack = track
+    try {
+      const detail = await getTrackDetail(track.bvid)
+      const detailTrack = track.cid != null
+        ? detail.pages.find((page) => page.cid === track.cid) ?? detail.track
+        : detail.track
+      nextTrack = {
+        ...nextTrack,
+        owner: nextTrack.owner || detailTrack.owner || detail.track.owner,
+        ownerMid: nextTrack.ownerMid ?? detailTrack.ownerMid ?? detail.track.ownerMid ?? null,
+        cover: nextTrack.cover || detailTrack.cover || detail.track.cover,
+        publishedAt: nextTrack.publishedAt ?? detailTrack.publishedAt ?? detail.track.publishedAt,
+        playCount: nextTrack.playCount ?? detailTrack.playCount ?? detail.track.playCount,
+      }
+    } catch (error) {
+      console.warn('Failed to hydrate track detail:', error)
+    }
+
+    if (track.cid == null) return nextTrack
     try {
       const coverInfo = await getTrackCoverInfo(track.bvid, track.cid)
       return {
-        ...track,
-        cover: coverInfo.cover || track.cover,
+        ...nextTrack,
+        cover: coverInfo.cover || nextTrack.cover,
       }
     } catch (error) {
       console.warn('Failed to hydrate track cover:', error)
-      return track
+      return nextTrack
     }
   }
 
-  function hydrateTrackCoverInBackground(track: Track, seq: number) {
-    void hydrateTrackCover(track).then((hydratedTrack) => {
+  function hydrateTrackMetadataInBackground(track: Track, seq: number) {
+    void hydrateTrackMetadata(track).then((hydratedTrack) => {
       if (seq !== playSeq) return
       const activeTrack = currentTrack.value
       if (!activeTrack || !isSameTrack(activeTrack, track)) return
-      if (hydratedTrack.cover === activeTrack.cover) return
+      if (
+        hydratedTrack.cover === activeTrack.cover
+        && hydratedTrack.ownerMid === activeTrack.ownerMid
+        && hydratedTrack.owner === activeTrack.owner
+      ) return
 
       const updatedTrack = { ...activeTrack, ...hydratedTrack }
       queue.value[currentIndex.value] = updatedTrack
@@ -706,6 +917,48 @@ export const usePlayerStore = defineStore('player', () => {
       queue.value.push(track)
       currentIndex.value = queue.value.length - 1
     }
+  }
+
+  function maybeRecordRecentProgress(completed: boolean) {
+    if (playbackRecentRecorded) return
+    const track = currentTrack.value
+    if (!track) return
+    const key = trackIdentity(track)
+    if (!playbackRecentKey || playbackRecentKey !== key) return
+    const dur = duration.value || track.duration || 0
+    if (dur <= 0) return
+    const requiredListenSeconds = Math.max(0, dur * RECENT_RECORD_RATIO - 1)
+    if (playbackListenSeconds < requiredListenSeconds) return
+
+    const watchedSeconds = Math.max(currentTime.value, playbackListenSeconds)
+    const completedByPosition = completed && currentTime.value >= dur * 0.95
+
+    playbackRecentRecorded = true
+    useLibraryStore().addRecent(track, {
+      positionMs: Math.round(watchedSeconds * 1000),
+      listenMs: Math.round(playbackListenSeconds * 1000),
+      completed: completedByPosition,
+    })
+  }
+
+  function accumulatePlaybackListenTime(position: number) {
+    if (playbackRecentRecorded) {
+      playbackLastPosition = position
+      return
+    }
+    if (playbackLastPosition === null) {
+      playbackLastPosition = position
+      return
+    }
+    const delta = position - playbackLastPosition
+    playbackLastPosition = position
+    if (status.value !== 'playing') return
+    if (delta <= 0 || delta > 5) return
+    playbackListenSeconds += delta
+  }
+
+  function trackIdentity(track: Track): string {
+    return track.trackId ?? `${track.bvid}:${track.cid ?? 'main'}`
   }
 
   function findTrackIndex(track: Track): number {
@@ -726,6 +979,7 @@ export const usePlayerStore = defineStore('player', () => {
       title: track.title,
       duration: track.duration,
       owner: track.owner,
+      ownerMid: track.ownerMid,
       cover: track.cover,
       playCount: track.playCount,
       publishedAt: track.publishedAt,
@@ -740,10 +994,58 @@ export const usePlayerStore = defineStore('player', () => {
       title: info.title,
       duration: info.duration,
       owner: info.owner,
+      ownerMid: info.ownerMid,
       cover: info.cover,
       playCount: info.playCount,
       publishedAt: info.publishedAt,
     }
+  }
+
+  function normalizeAvailableQualities(value: unknown): AudioQualityPreference[] {
+    if (!Array.isArray(value)) return ['auto']
+    const result = value.filter(isAudioQuality)
+    return result.length ? result : ['auto']
+  }
+
+  function setAudioQualityPreference(value: AudioQualityPreference) {
+    if (!isAudioQuality(value)) return
+    audioQualityPreference.value = value
+    saveSettingsSnapshotLocal()
+    void updateSettings({ audioQualityPreference: value })
+      .then((settings) => {
+        settingsBackendAvailable.value = true
+        settingsSyncError.value = null
+        if (isAudioQuality(settings.audioQualityPreference)) {
+          audioQualityPreference.value = settings.audioQualityPreference
+          saveSettingsSnapshotLocal()
+        }
+      })
+      .catch((error) => {
+        settingsBackendAvailable.value = false
+        settingsSyncError.value = error instanceof Error ? error.message : 'settings sync failed'
+      })
+  }
+
+  function setPlaybackSpeed(value: number) {
+    const normalized = Number(value)
+    if (!isPlaybackSpeed(normalized)) return
+    playbackSpeed.value = normalized
+    streamingAudioPlayer.setPlaybackRate(normalized)
+    saveSettingsSnapshotLocal()
+    void updateSettings({ playbackSpeed: normalized })
+      .then((settings) => {
+        settingsBackendAvailable.value = true
+        settingsSyncError.value = null
+        if (isPlaybackSpeed(Number(settings.playbackSpeed))) {
+          playbackSpeed.value = Number(settings.playbackSpeed)
+          streamingAudioPlayer.setPlaybackRate(playbackSpeed.value)
+          saveSettingsSnapshotLocal()
+        }
+      })
+      .catch((error) => {
+        settingsBackendAvailable.value = false
+        settingsSyncError.value = error instanceof Error ? error.message : 'settings sync failed'
+      })
   }
 
   function disconnect() {
@@ -767,6 +1069,12 @@ export const usePlayerStore = defineStore('player', () => {
     subtitleLines,
     subtitleLoading,
     subtitleError,
+    playRequestSerial,
+    audioQualityPreference,
+    availableAudioQualities,
+    playbackSpeed,
+    settingsBackendAvailable,
+    settingsSyncError,
     queue,
     currentIndex,
     playMode,
@@ -789,8 +1097,10 @@ export const usePlayerStore = defineStore('player', () => {
     playTrack,
     playList,
     enqueue,
+    enqueueTracks,
     playAt,
     removeFromQueue,
+    moveQueueItem,
     clearQueue,
     next,
     prev,
@@ -809,5 +1119,7 @@ export const usePlayerStore = defineStore('player', () => {
     downloadCurrent,
     loadCurrentSubtitles,
     clearCurrentSubtitles,
+    setAudioQualityPreference,
+    setPlaybackSpeed,
   }
 })

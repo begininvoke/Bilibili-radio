@@ -203,6 +203,7 @@ const track = computed<Track | null>(() => {
       cid: videoInfo.value.cid,
       title: videoInfo.value.title,
       owner: videoInfo.value.owner,
+      ownerMid: videoInfo.value.ownerMid,
       cover: videoInfo.value.cover,
       duration: videoInfo.value.duration,
       playCount: videoInfo.value.playCount,

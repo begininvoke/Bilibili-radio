@@ -26,6 +26,7 @@ from track_service import (
     normalize_player_subtitles,
     normalize_reply_comments,
     normalize_search_item,
+    normalize_space_archive_item,
     normalize_subtitle_lines,
     normalize_video_detail,
     normalize_video_intro,
@@ -79,6 +80,22 @@ class TrackServiceTests(unittest.TestCase):
 
         self.assertEqual(detail.pages[0].cover, "https://i0.hdslb.com/p1.jpg")
         self.assertEqual(detail.pages[1].cover, "https://i0.hdslb.com/video.jpg")
+
+    def test_space_archive_length_becomes_track_duration(self):
+        track = normalize_space_archive_item(
+            {
+                "bvid": VALID_BVID,
+                "title": "Space archive",
+                "length": "03:45",
+                "pic": "//i0.hdslb.com/archive.jpg",
+                "play": 10,
+            },
+            {"mid": 12345, "name": "UP"},
+        )
+
+        self.assertIsNotNone(track)
+        self.assertEqual(track.duration, 225)
+        self.assertEqual(track.owner_mid, 12345)
 
 
 class FakeCookie:
@@ -524,10 +541,10 @@ class SettingsServiceTests(unittest.TestCase):
     def test_audio_quality_preference_persists(self):
         self.assertEqual(self.service.get_audio_quality_preference(), "auto")
 
-        self.service.set_audio_quality_preference("high")
+        self.service.set_audio_quality_preference("192k")
         reloaded = SettingsService(self.db_path)
 
-        self.assertEqual(reloaded.get_audio_quality_preference(), "high")
+        self.assertEqual(reloaded.get_audio_quality_preference(), "192k")
 
     def test_audio_quality_preference_rejects_invalid_values(self):
         with self.assertRaises(Exception):

@@ -51,7 +51,16 @@
       <div class="info-side">
         <div class="track-head">
           <h1 class="np-title" :title="track?.title">{{ track?.title || '未在播放' }}</h1>
-          <p class="np-owner">{{ ownerLine }}</p>
+          <button
+            v-if="track?.bvid"
+            class="np-owner np-owner-link"
+            type="button"
+            :title="`打开 UP 主页：${track.owner}`"
+            @click="openOwner"
+          >
+            {{ ownerLine }}
+          </button>
+          <p v-else class="np-owner">{{ ownerLine }}</p>
           <p class="np-stats">{{ statsLine }}</p>
           <div class="detail-actions">
             <button class="detail-btn" :disabled="!track" title="加入播放队列" @click="enqueueCurrent">
@@ -231,7 +240,7 @@
                 </button>
               </div>
 
-              <div class="review-moods" aria-label="情绪">
+              <div class="review-moods" aria-label="标签">
                 <button
                   v-for="mood in reviewMoods"
                   :key="mood"
@@ -239,9 +248,27 @@
                   class="review-mood"
                   :class="{ active: reviewMood === mood }"
                   :disabled="!track || reviewSaving"
-                  @click="reviewMood = mood"
+                  @click="selectReviewLabel(mood)"
                 >
                   {{ mood }}
+                </button>
+              </div>
+
+              <div class="review-custom-label">
+                <input
+                  v-model="reviewCustomLabel"
+                  :disabled="!track || reviewSaving"
+                  maxlength="4"
+                  placeholder="自定义标签"
+                  @input="syncCustomLabel"
+                />
+                <button
+                  type="button"
+                  class="review-action ghost"
+                  :disabled="!canApplyCustomLabel"
+                  @click="applyCustomLabel"
+                >
+                  添加
                 </button>
               </div>
 
@@ -338,6 +365,7 @@ import {
   mediaUrl,
   saveTrackReview,
 } from '@/api/client'
+import { useOpenOwner } from '@/composables/useOpenOwner'
 import type { PlayMode, Track, TrackChapters, TrackComments, TrackIntro, TrackReview, TrackSubtitles } from '@/types'
 import { formatCount } from '@/utils/format'
 import AppIcon from '@/components/base/AppIcon.vue'
@@ -356,6 +384,7 @@ interface LyricsWindowDebug {
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
+const { openTrackOwner } = useOpenOwner()
 
 const { currentTrack, videoInfo, isPlaying, isDownloading, desktopLyricText } = storeToRefs(player)
 const reducedMotion = computed(() => ui.reducedMotion)
@@ -370,6 +399,7 @@ const track = computed<Track | null>(() => {
       cid: videoInfo.value.cid,
       title: videoInfo.value.title,
       owner: videoInfo.value.owner,
+      ownerMid: videoInfo.value.ownerMid,
       cover: videoInfo.value.cover,
       duration: videoInfo.value.duration,
       playCount: videoInfo.value.playCount,
@@ -427,6 +457,7 @@ const infoPanelRef = ref<HTMLElement | null>(null)
 const trackReview = ref<TrackReview | null>(null)
 const reviewRating = ref(0)
 const reviewMood = ref('')
+const reviewCustomLabel = ref('')
 const reviewNote = ref('')
 const reviewLoading = ref(false)
 const reviewSaving = ref(false)
@@ -468,10 +499,16 @@ const canSaveReview = computed(() => (
   !!track.value &&
   reviewRating.value >= 1 &&
   reviewRating.value <= 5 &&
-  reviewMood.value.trim().length > 0 &&
+  normalizedReviewLabel.value.length >= 1 &&
+  normalizedReviewLabel.value.length <= 4 &&
   !reviewLoading.value &&
   !reviewSaving.value
 ))
+const normalizedReviewLabel = computed(() => reviewMood.value.trim())
+const canApplyCustomLabel = computed(() => {
+  const label = reviewCustomLabel.value.trim()
+  return !!track.value && !reviewSaving.value && label.length >= 1 && label.length <= 4
+})
 const reviewUpdatedAt = computed(() => {
   if (!trackReview.value?.updatedAt) return ''
   return `更新于 ${formatReviewDate(trackReview.value.updatedAt)}`
@@ -550,6 +587,7 @@ function resetReviewForm() {
   trackReview.value = null
   reviewRating.value = 0
   reviewMood.value = ''
+  reviewCustomLabel.value = ''
   reviewNote.value = ''
   reviewLoading.value = false
   reviewSaving.value = false
@@ -581,7 +619,9 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
       enabled: true,
       text: desktopLyricText.value || '-',
       color: ui.lyricsOverlayColor,
+      fontSize: ui.lyricsOverlayFontSize,
       title: track.value?.title ?? '',
+      isPlaying: isPlaying.value,
     })
     console.info('[desktop-lyrics] now playing show', debug)
   } catch (error) {
@@ -601,6 +641,7 @@ async function loadTrackReview() {
     trackReview.value = review
     reviewRating.value = review?.rating ?? 0
     reviewMood.value = review?.mood ?? ''
+    reviewCustomLabel.value = review?.mood && !reviewMoods.includes(review.mood) ? review.mood : ''
     reviewNote.value = review?.note ?? ''
   } catch (error) {
     if (seq === detailSeq) {
@@ -797,11 +838,12 @@ async function saveReview() {
   reviewError.value = null
   reviewSavedMessage.value = ''
   try {
-    const review = await saveTrackReview(current, reviewRating.value, reviewMood.value, reviewNote.value)
+    const review = await saveTrackReview(current, reviewRating.value, normalizedReviewLabel.value, reviewNote.value)
     if (seq !== detailSeq) return
     trackReview.value = review
     reviewRating.value = review.rating
     reviewMood.value = review.mood
+    reviewCustomLabel.value = review.mood && !reviewMoods.includes(review.mood) ? review.mood : ''
     reviewNote.value = review.note
     reviewSavedMessage.value = '已保存'
   } catch (error) {
@@ -825,6 +867,7 @@ async function clearReview() {
     trackReview.value = null
     reviewRating.value = 0
     reviewMood.value = ''
+    reviewCustomLabel.value = ''
     reviewNote.value = ''
     reviewSavedMessage.value = '已清空'
   } catch (error) {
@@ -838,6 +881,32 @@ async function clearReview() {
 
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
+}
+
+function selectReviewLabel(label: string) {
+  reviewMood.value = label
+  reviewCustomLabel.value = ''
+}
+
+function syncCustomLabel() {
+  const label = reviewCustomLabel.value.trim()
+  if (label.length >= 1 && label.length <= 4) {
+    reviewMood.value = label
+  }
+}
+
+function applyCustomLabel() {
+  if (!canApplyCustomLabel.value) return
+  reviewMood.value = reviewCustomLabel.value.trim()
+}
+
+function openOwner() {
+  void openTrackOwner(track.value).then((opened) => {
+    if (opened) ui.closeNowPlaying()
+    else player.statusMessage = '无法打开 UP 主页：缺少 UP 主 ID'
+  }).catch((error) => {
+    player.statusMessage = error instanceof Error ? error.message : '无法打开 UP 主页'
+  })
 }
 
 function enqueueCurrent() {
@@ -1117,6 +1186,20 @@ function addCurrentToPlaylist(playlistId: string) {
   margin-top: 10px;
   font-size: 15px;
   color: rgba(255, 255, 255, 0.75);
+}
+
+.np-owner-link {
+  display: block;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.np-owner-link:hover {
+  color: #fff;
 }
 
 .np-stats {
@@ -1588,6 +1671,32 @@ function addCurrentToPlaylist(playlistId: string) {
   color: #fff;
 }
 
+.review-custom-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.review-custom-label input {
+  width: 120px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-small);
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  outline: none;
+}
+
+.review-custom-label input:focus {
+  border-color: rgba(251, 114, 153, 0.5);
+}
+
+.review-custom-label input::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+
 .review-note {
   width: 100%;
   min-height: 54px;
@@ -1652,6 +1761,7 @@ function addCurrentToPlaylist(playlistId: string) {
 .review-action:disabled,
 .review-star:disabled,
 .review-mood:disabled,
+.review-custom-label input:disabled,
 .review-note:disabled {
   opacity: 0.5;
   cursor: not-allowed;

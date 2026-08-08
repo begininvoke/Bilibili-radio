@@ -26,6 +26,8 @@ from track_service import (
     normalize_player_subtitles,
     normalize_reply_comments,
     normalize_search_item,
+    normalize_space_archive_item,
+    normalize_space_profile,
     normalize_subtitle_lines,
     normalize_user_profile,
     normalize_video_detail,
@@ -33,10 +35,27 @@ from track_service import (
 )
 
 
+AUDIO_QUALITY_STREAM_IDS = {
+    "64k": 30216,
+    "132k": 30232,
+    "192k": 30280,
+    "dolby": 30250,
+    "hires": 30251,
+}
 QUALITY_ORDER = {
     "auto": [],
-    "high": [30280, 30232, 30216],
-    "standard": [30232, 30216, 30280],
+    "64k": [30216, 30232, 30280, 30250, 30251],
+    "132k": [30232, 30216, 30280, 30250, 30251],
+    "192k": [30280, 30232, 30216, 30250, 30251],
+    "dolby": [30250, 30280, 30232, 30216, 30251],
+    "hires": [30251, 30280, 30232, 30216, 30250],
+    # Compatibility for existing saved settings.
+    "standard": [30232, 30216, 30280, 30250, 30251],
+    "high": [30280, 30232, 30216, 30250, 30251],
+}
+QUALITY_ALIASES = {
+    "standard": "132k",
+    "high": "192k",
 }
 
 WBI_MIXIN_KEY_ENC_TAB = (
@@ -458,13 +477,14 @@ class BiliClient:
         if not audio_streams:
             raise APIError.no_audio_stream()
 
-        selected = self._select_audio_stream(audio_streams, quality)
+        requested_quality = self._normalize_audio_quality(quality)
+        selected = self._select_audio_stream(audio_streams, requested_quality)
         stream_id = selected.get("id")
         bitrate = int(selected.get("bandwidth") or 0)
         actual_quality = self._quality_label(stream_id, bitrate)
-        requested_quality = quality if quality in QUALITY_ORDER else "auto"
         codec = self._codec_label(selected.get("codecs"))
         fallback = requested_quality != "auto" and requested_quality != actual_quality
+        available_qualities = self._available_audio_qualities(audio_streams)
 
         return AudioStreamInfo(
             url=selected.get("baseUrl") or selected.get("base_url") or "",
@@ -480,6 +500,7 @@ class BiliClient:
             codec=codec,
             fallback=fallback,
             stream_id=int(stream_id) if stream_id is not None else None,
+            available_qualities=available_qualities,
         )
 
     def get_authenticated_user(self) -> dict[str, Any]:
@@ -597,6 +618,72 @@ class BiliClient:
             "unavailable": unavailable,
             "folder": folder or {"mediaId": int(media_id), "title": ""},
             "tracks": all_tracks,
+        }
+
+    def get_user_profile(self, mid: int) -> dict[str, Any]:
+        mid = int(mid or 0)
+        if mid <= 0:
+            raise APIError.validation_error("mid is required")
+
+        def load() -> dict[str, Any]:
+            payload = self._space_wbi_get(
+                APIConst.SPACE_INFO_URL,
+                "space profile",
+                {"mid": mid},
+            )
+            return normalize_space_profile(payload.get("data") or {})
+
+        return self._cached_metadata_payload(
+            namespace="space_profile",
+            cache=self._detail_cache,
+            key=f"{self.cache_scope()}:space:{mid}",
+            ttl_seconds=self._detail_cache_ttl_seconds,
+            loader=load,
+        )
+
+    def list_user_tracks(
+        self,
+        mid: int,
+        page: int = 1,
+        page_size: int = 20,
+        order: str = "pubdate",
+    ) -> dict[str, Any]:
+        mid = int(mid or 0)
+        if mid <= 0:
+            raise APIError.validation_error("mid is required")
+        page = max(int(page or 1), 1)
+        page_size = min(max(int(page_size or 20), 1), 50)
+        resolved_order = "click" if order == "click" else "pubdate"
+        payload = self._space_wbi_get(
+            APIConst.SPACE_ARCHIVE_URL,
+            "space archives",
+            {
+                "mid": mid,
+                "pn": page,
+                "ps": page_size,
+                "order": resolved_order,
+            },
+        )
+        data = payload.get("data") or {}
+        archive = (data.get("list") or {}).get("vlist") or []
+        profile_data = (data.get("list") or {}).get("tlist") or {}
+        profile = self.get_user_profile(mid)
+        tracks = []
+        for item in archive:
+            track = normalize_space_archive_item(item, profile)
+            if track:
+                tracks.append(track)
+        total = int((data.get("page") or {}).get("count") or len(tracks))
+        return {
+            "mid": mid,
+            "page": page,
+            "pageSize": page_size,
+            "order": resolved_order,
+            "total": total,
+            "hasMore": page * page_size < total and len(tracks) > 0,
+            "profile": profile,
+            "tracks": [track.to_dict() for track in tracks],
+            "rawCategories": profile_data,
         }
 
     def get_video_with_audio(self, input_str: str) -> tuple[VideoInfo, AudioStreamInfo]:
@@ -861,9 +948,72 @@ class BiliClient:
                 if self._metadata_inflight.get(inflight_key) is future:
                     self._metadata_inflight.pop(inflight_key, None)
 
+    def _space_wbi_get(
+        self,
+        url: str,
+        context: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._has_auth_cookie():
+            self._ensure_guest_cookies()
+        wbi_keys = self._get_wbi_keys()
+        for attempt in range(2):
+            signed_params = self._sign_wbi_params(
+                params,
+                wbi_keys["img_key"],
+                wbi_keys["sub_key"],
+            )
+            try:
+                response = self._observed_get(
+                    "space",
+                    self._space_http_session(),
+                    url,
+                    params=signed_params,
+                    headers=self._with_auth_cookie(HttpHeader.default_headers()),
+                    timeout=self.timeout,
+                )
+                payload = self._json_payload(response, context)
+                if self._is_wbi_signature_rejection(response, payload) and attempt == 0:
+                    stale_keys = wbi_keys
+                    wbi_keys = self._get_wbi_keys(force_refresh=True, stale_keys=stale_keys)
+                    continue
+                if self._is_space_risk_rejection(response, payload) and attempt == 0:
+                    self._ensure_guest_cookies(force=True)
+                    continue
+                response.raise_for_status()
+            except requests.Timeout:
+                raise APIError.request_timeout(context)
+            except requests.HTTPError as exc:
+                raise self._http_error(exc, context)
+            except requests.RequestException as exc:
+                raise APIError.network_error(str(exc))
+
+            if payload.get("code") != 0:
+                raise APIError.api_error(payload.get("message") or f"Bilibili {context} failed")
+            return payload
+        raise APIError.api_error("Bilibili WBI signature was rejected after key refresh")
+
+    def _space_http_session(self):
+        if self.session is not self._guest_session:
+            return self.session
+        if self._has_auth_cookie():
+            return self.auth_session
+        return self.session
+
     @staticmethod
-    def _select_audio_stream(audio_streams: list[dict[str, Any]], quality: str) -> dict[str, Any]:
-        normalized = quality if quality in QUALITY_ORDER else "auto"
+    def _is_space_risk_rejection(response: requests.Response, payload: dict[str, Any]) -> bool:
+        message = str(payload.get("message") or "")
+        return response.status_code == 412 or payload.get("code") in {-412, -352} or "风控" in message
+
+    @classmethod
+    def _normalize_audio_quality(cls, quality: str) -> str:
+        normalized = (quality or "auto").strip().lower()
+        normalized = QUALITY_ALIASES.get(normalized, normalized)
+        return normalized if normalized in QUALITY_ORDER else "auto"
+
+    @classmethod
+    def _select_audio_stream(cls, audio_streams: list[dict[str, Any]], quality: str) -> dict[str, Any]:
+        normalized = cls._normalize_audio_quality(quality)
         if normalized == "auto":
             return max(audio_streams, key=lambda item: int(item.get("bandwidth") or 0))
 
@@ -879,11 +1029,24 @@ class BiliClient:
             sid = int(stream_id)
         except (TypeError, ValueError):
             sid = 0
-        if sid >= 30280 or bitrate >= 160000:
-            return "high"
-        if sid >= 30232 or bitrate >= 96000:
-            return "standard"
-        return "low"
+        for label, candidate_id in AUDIO_QUALITY_STREAM_IDS.items():
+            if sid == candidate_id:
+                return label
+        if bitrate >= 160000:
+            return "192k"
+        if bitrate >= 96000:
+            return "132k"
+        return "64k"
+
+    @staticmethod
+    def _available_audio_qualities(audio_streams: list[dict[str, Any]]) -> list[str]:
+        available = {"auto"}
+        stream_ids = {int(item.get("id") or 0) for item in audio_streams}
+        for label, stream_id in AUDIO_QUALITY_STREAM_IDS.items():
+            if stream_id in stream_ids:
+                available.add(label)
+        order = ["auto", "64k", "132k", "192k", "dolby", "hires"]
+        return [label for label in order if label in available]
 
     @staticmethod
     def _codec_label(codecs: Any) -> str:
@@ -990,6 +1153,9 @@ class BiliClient:
         if not cookie:
             return headers
         return {**headers, "Cookie": cookie}
+
+    def _has_auth_cookie(self) -> bool:
+        return bool((self.cookie_provider() if self.cookie_provider else None) or "")
 
     @staticmethod
     def _observed_get(

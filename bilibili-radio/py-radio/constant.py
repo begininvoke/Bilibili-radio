@@ -49,6 +49,8 @@ class BilibiliAPI:
     QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
     FAVORITE_FOLDERS_URL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
     FAVORITE_RESOURCE_URL = "https://api.bilibili.com/x/v3/fav/resource/list"
+    SPACE_INFO_URL = "https://api.bilibili.com/x/space/wbi/acc/info"
+    SPACE_ARCHIVE_URL = "https://api.bilibili.com/x/space/wbi/arc/search"
 
     BV_PATTERN = re.compile(r"^(BV|bv)[0-9A-Za-z]{10}$")
     URL_PATTERN = re.compile(

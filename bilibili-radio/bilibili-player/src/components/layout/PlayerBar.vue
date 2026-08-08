@@ -16,7 +16,16 @@
           <button class="meta-title meta-title-button" type="button" :title="track.title" @click.stop="openNowPlaying">
             {{ track.title }}
           </button>
-          <div class="meta-owner" :title="track.owner">{{ track.owner }}</div>
+          <button
+            v-if="track.bvid"
+            class="meta-owner owner-link"
+            type="button"
+            :title="`打开 UP 主页：${track.owner}`"
+            @click.stop="openOwner"
+          >
+            {{ track.owner }}
+          </button>
+          <div v-else class="meta-owner" :title="track.owner">{{ track.owner }}</div>
         </div>
         <button
           class="icon-btn like-btn"
@@ -84,6 +93,21 @@
     <!-- 右侧 30%：辅助操作 -->
     <div class="player-right">
       <VolumeControl />
+      <select
+        class="setting-select quality-select"
+        :value="player.audioQualityPreference"
+        title="音频流 / 音质"
+        @change="changeAudioQuality"
+      >
+        <option v-for="quality in audioQualityOptions" :key="quality.value" :value="quality.value">
+          {{ quality.label }}
+        </option>
+      </select>
+      <select class="setting-select speed-select" :value="player.playbackSpeed" title="倍速" @change="changePlaybackSpeed">
+        <option v-for="speed in playbackSpeedOptions" :key="speed.value" :value="speed.value">
+          {{ speed.label }}
+        </option>
+      </select>
       <button
         class="lyrics-toggle-btn"
         :class="{ active: ui.lyricsOverlayEnabled }"
@@ -107,7 +131,12 @@
           @click="setDesktopLyricsColor(color)"
         />
       </div>
-      <button class="icon-btn" title="画中画（暂未接入）" disabled>
+      <div v-if="isDesktop && ui.lyricsOverlayEnabled" class="lyrics-font-size" aria-label="桌面歌词字号">
+        <button class="lyrics-size-btn" type="button" title="减小字幕" @click="changeDesktopLyricsFontSize(-2)">A-</button>
+        <span>{{ ui.lyricsOverlayFontSize }}</span>
+        <button class="lyrics-size-btn" type="button" title="放大字幕" @click="changeDesktopLyricsFontSize(2)">A+</button>
+      </div>
+      <button class="icon-btn pip-btn" title="画中画（暂未接入）" disabled>
         <AppIcon name="pip" :size="18" />
       </button>
       <button
@@ -132,7 +161,8 @@ import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { useUiStore } from '@/stores/uiStore'
 import { mediaUrl } from '@/api/client'
-import type { PlayMode, Track } from '@/types'
+import { useOpenOwner } from '@/composables/useOpenOwner'
+import type { AudioQualityPreference, PlayMode, Track } from '@/types'
 import AppIcon from '@/components/base/AppIcon.vue'
 import LoadingDots from '@/components/base/LoadingDots.vue'
 import ProgressBar from '@/components/ProgressBar.vue'
@@ -150,6 +180,7 @@ interface LyricsWindowDebug {
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
+const { openTrackOwner } = useOpenOwner()
 
 const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading, desktopLyricText } =
   storeToRefs(player)
@@ -164,6 +195,7 @@ const track = computed<Track | null>(() => {
       cid: videoInfo.value.cid,
       title: videoInfo.value.title,
       owner: videoInfo.value.owner,
+      ownerMid: videoInfo.value.ownerMid,
       cover: videoInfo.value.cover,
       duration: videoInfo.value.duration,
       playCount: videoInfo.value.playCount,
@@ -188,6 +220,34 @@ const MODE_META: Record<PlayMode, { icon: string; label: string }> = {
 const modeIcon = computed(() => MODE_META[player.playMode].icon)
 const modeLabel = computed(() => MODE_META[player.playMode].label)
 
+const BASE_AUDIO_QUALITY_OPTIONS: Array<{ value: AudioQualityPreference; label: string; dynamic?: boolean }> = [
+  { value: 'auto', label: '自动' },
+  { value: '64k', label: '64K' },
+  { value: '132k', label: '132K' },
+  { value: '192k', label: '192K' },
+  { value: 'dolby', label: 'Dolby', dynamic: true },
+  { value: 'hires', label: 'Hi-Res', dynamic: true },
+]
+
+const playbackSpeedOptions = [
+  { value: 0.5, label: '0.5x' },
+  { value: 0.75, label: '0.75x' },
+  { value: 1, label: '1x' },
+  { value: 1.25, label: '1.25x' },
+  { value: 1.5, label: '1.5x' },
+  { value: 2, label: '2x' },
+]
+
+const audioQualityOptions = computed(() => {
+  const available = new Set(player.availableAudioQualities)
+  available.add('auto')
+  available.add('64k')
+  available.add('132k')
+  available.add('192k')
+  available.add(player.audioQualityPreference)
+  return BASE_AUDIO_QUALITY_OPTIONS.filter((option) => !option.dynamic || available.has(option.value))
+})
+
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
 }
@@ -195,6 +255,25 @@ function toggleLike() {
 function openNowPlaying() {
   if (!player.hasTrack) return
   ui.openNowPlaying()
+}
+
+function openOwner() {
+  void openTrackOwner(track.value).then((opened) => {
+    if (!opened) {
+      player.statusMessage = '无法打开 UP 主页：缺少 UP 主 ID'
+    }
+  }).catch((error) => {
+    player.statusMessage = error instanceof Error ? error.message : '无法打开 UP 主页'
+  })
+}
+
+function changeAudioQuality(event: Event) {
+  const value = (event.target as HTMLSelectElement).value as AudioQualityPreference
+  player.setAudioQualityPreference(value)
+}
+
+function changePlaybackSpeed(event: Event) {
+  player.setPlaybackSpeed(Number((event.target as HTMLSelectElement).value))
 }
 
 async function toggleDesktopLyrics() {
@@ -215,6 +294,13 @@ async function setDesktopLyricsColor(color: string) {
   }
 }
 
+async function changeDesktopLyricsFontSize(delta: number) {
+  ui.setLyricsOverlayFontSize(ui.lyricsOverlayFontSize + delta)
+  if (ui.lyricsOverlayEnabled) {
+    await syncDesktopLyricsWindow(true)
+  }
+}
+
 async function syncDesktopLyricsWindow(enabled: boolean) {
   if (!isDesktop.value) return
   try {
@@ -228,7 +314,9 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
       enabled: true,
       text: desktopLyricText.value || '-',
       color: ui.lyricsOverlayColor,
+      fontSize: ui.lyricsOverlayFontSize,
       title: track.value?.title ?? '',
+      isPlaying: isPlaying.value,
     })
     console.info('[desktop-lyrics] player bar show', debug)
   } catch (error) {
@@ -243,7 +331,7 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
   background: var(--color-bg-content);
   border-top: 1px solid var(--color-border);
   display: grid;
-  grid-template-columns: 30% 40% 30%;
+  grid-template-columns: minmax(220px, 1fr) minmax(340px, 1.25fr) minmax(320px, max-content);
   align-items: center;
   padding: 0 20px;
   gap: 16px;
@@ -352,12 +440,27 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
   text-overflow: ellipsis;
 }
 
+.owner-link {
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.owner-link:hover {
+  color: var(--color-primary);
+}
+
 /* 中间 */
 .player-center {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .control-row {
@@ -417,6 +520,29 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  min-width: 0;
+}
+
+.setting-select {
+  height: 30px;
+  min-width: 68px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-content);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.setting-select:hover,
+.setting-select:focus {
+  border-color: var(--color-primary);
+  color: var(--color-text-primary);
+}
+
+.speed-select {
+  min-width: 58px;
 }
 
 /* 通用图标按钮 */
@@ -500,6 +626,35 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
   background: var(--color-bg-hover);
 }
 
+.lyrics-font-size {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lyrics-size-btn {
+  min-width: 26px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.lyrics-size-btn:hover {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
 .lyrics-color {
   width: 16px;
   height: 16px;
@@ -540,6 +695,84 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
 
 @media (prefers-reduced-motion: reduce) {
   .spin-slow { animation: none; }
+}
+
+@media (max-width: 1180px) {
+  .player-bar {
+    grid-template-columns: minmax(180px, 0.9fr) minmax(300px, 1.35fr) minmax(250px, auto);
+    padding: 0 12px;
+    gap: 10px;
+  }
+
+  .player-left,
+  .empty-left {
+    gap: 8px;
+  }
+
+  .mini-cover {
+    width: 42px;
+    height: 42px;
+  }
+
+  .control-row {
+    gap: 8px;
+  }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  .play-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .player-right {
+    gap: 4px;
+  }
+
+  .lyrics-toggle-btn {
+    width: 34px;
+    padding: 0;
+    border-radius: 50%;
+  }
+
+  .lyrics-toggle-text,
+  .lyrics-colors,
+  .lyrics-font-size {
+    display: none;
+  }
+}
+
+@media (max-width: 980px) {
+  .player-bar {
+    grid-template-columns: minmax(150px, 0.75fr) minmax(280px, 1.4fr) auto;
+  }
+
+  .like-btn,
+  .pip-btn {
+    display: none;
+  }
+
+  .setting-select {
+    min-width: 58px;
+    max-width: 64px;
+  }
+
+  .quality-select {
+    max-width: 72px;
+  }
+}
+
+@media (max-width: 860px) {
+  .player-bar {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 1.3fr);
+  }
+
+  .player-right {
+    display: none;
+  }
 }
 
 @media (max-width: 720px) {

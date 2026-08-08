@@ -725,7 +725,13 @@ def playlists():
 
     payload = _json_body()
     tracks = _tracks_from_payload(payload)
-    playlist = _library_for_request().create_playlist(payload.get("name", ""), tracks=tracks)
+    playlist = _library_for_request().create_collection(
+        payload.get("name", ""),
+        tracks=tracks,
+        source_type=payload.get("sourceType") or payload.get("source_type") or "user-created",
+        source_bvid=payload.get("sourceBvid") or payload.get("source_bvid"),
+        cover=payload.get("cover"),
+    )
     return Result.ok(playlist).json_with_status(201)
 
 
@@ -763,6 +769,16 @@ def batch_playlist_items(playlist_id: str):
         playlist_id,
         tracks=_tracks_from_payload(payload),
         track_ids=_track_ids_from_payload(payload),
+    )
+    return Result.ok(result).json()
+
+
+@app.put("/api/library/playlists/<playlist_id>/items")
+def replace_playlist_items(playlist_id: str):
+    payload = _json_body()
+    result = _library_for_request().replace_playlist_items(
+        playlist_id,
+        _tracks_from_payload(payload),
     )
     return Result.ok(result).json()
 
@@ -915,6 +931,21 @@ def list_bili_favorite_tracks(media_id: int):
     return Result.ok(bili_client.list_favorite_tracks(media_id, page=page, page_size=page_size)).json()
 
 
+@app.get("/api/bili/users/<int:mid>/profile")
+def bili_user_profile(mid: int):
+    return Result.ok(bili_client.get_user_profile(mid)).json()
+
+
+@app.get("/api/bili/users/<int:mid>/tracks")
+def bili_user_tracks(mid: int):
+    page = _int_arg("page", 1)
+    page_size = _int_arg("page_size", _int_arg("pageSize", 20))
+    order = request.args.get("order", "pubdate")
+    return Result.ok(
+        bili_client.list_user_tracks(mid, page=page, page_size=page_size, order=order)
+    ).json()
+
+
 @app.post("/api/analysis/events")
 def record_analysis_event():
     return Result.ok(_analysis_for_request().record_event(_json_body())).json_with_status(202)
@@ -931,6 +962,9 @@ def update_settings():
     if "audioQualityPreference" in payload or "audio_quality_preference" in payload:
         value = payload.get("audioQualityPreference") or payload.get("audio_quality_preference")
         _settings_for_request().set_audio_quality_preference(value)
+    if "playbackSpeed" in payload or "playback_speed" in payload:
+        value = payload.get("playbackSpeed") or payload.get("playback_speed")
+        _settings_for_request().set_playback_speed(value)
     return Result.ok(_settings_for_request().to_dict()).json()
 
 

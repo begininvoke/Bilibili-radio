@@ -23,21 +23,31 @@
         <span>正在读取收藏夹</span>
       </div>
       <p v-else-if="errorMessage" class="error-text">{{ errorMessage }}</p>
-      <div v-else class="folder-grid">
-        <button
-          v-for="folder in folders"
-          :key="folder.mediaId"
-          class="folder-card"
-          @click="openFolder(folder.mediaId)"
-        >
-          <div class="folder-cover">
-            <img v-if="folder.cover" :src="mediaUrl(folder.cover)" :alt="folder.title" loading="lazy" />
-            <div v-else class="cover-placeholder">{{ folder.title.slice(0, 1) }}</div>
-            <span class="folder-count">{{ folder.mediaCount }}</span>
-          </div>
-          <div class="folder-title">{{ folder.title }}</div>
-        </button>
-      </div>
+      <template v-else>
+        <label v-if="folders.length" class="local-search">
+          <AppIcon name="search" :size="16" />
+          <input v-model="folderQuery" type="search" placeholder="搜索收藏夹" />
+          <button v-if="folderQuery" type="button" title="清空搜索" @click="folderQuery = ''">
+            <AppIcon name="close" :size="14" />
+          </button>
+        </label>
+        <div v-if="filteredFolders.length" class="folder-grid">
+          <button
+            v-for="folder in filteredFolders"
+            :key="folder.mediaId"
+            class="folder-card"
+            @click="openFolder(folder.mediaId)"
+          >
+            <div class="folder-cover">
+              <img v-if="folder.cover" :src="mediaUrl(folder.cover)" :alt="folder.title" loading="lazy" />
+              <div v-else class="cover-placeholder">{{ folder.title.slice(0, 1) }}</div>
+              <span class="folder-count">{{ folder.mediaCount }}</span>
+            </div>
+            <div class="folder-title">{{ folder.title }}</div>
+          </button>
+        </div>
+        <p v-else class="empty-filter">没有匹配的收藏夹</p>
+      </template>
     </template>
 
     <template v-else>
@@ -69,25 +79,34 @@
         </div>
       </div>
 
+      <label v-if="activeTracks.length" class="local-search">
+        <AppIcon name="search" :size="16" />
+        <input v-model="trackQuery" type="search" placeholder="搜索当前收藏夹" />
+        <button v-if="trackQuery" type="button" title="清空搜索" @click="trackQuery = ''">
+          <AppIcon name="close" :size="14" />
+        </button>
+      </label>
+
       <div v-if="trackLoading" class="loading-state">
         <LoadingDots />
         <span>正在读取收藏夹内容</span>
       </div>
       <p v-else-if="errorMessage" class="error-text">{{ errorMessage }}</p>
-      <div v-else class="result-list">
+      <div v-else-if="filteredActiveTracks.length" class="result-list">
         <TrackRow
-          v-for="(track, i) in activeTracks"
+          v-for="(track, i) in filteredActiveTracks"
           :key="track.trackId ?? `${track.bvid}:${track.cid ?? i}`"
           :track="track"
           :index="i"
           :is-current="isCurrent(track)"
           :is-playing="isPlaying && isCurrent(track)"
           :is-liked="library.isLiked(track.bvid)"
-          @play="player.playList(activeTracks, i)"
+          @play="player.playList(filteredActiveTracks, i)"
           @like="library.toggleLike(track)"
           @enqueue="player.enqueue(track)"
         />
       </div>
+      <p v-else class="empty-filter">没有匹配的收藏内容</p>
       <div v-if="favoriteHasMore" class="load-more-row">
         <button class="ghost-btn" :disabled="loadingMore" @click="loadMoreTracks">
           <AppIcon name="repeat" :size="16" />
@@ -126,6 +145,8 @@ const { currentTrack, isPlaying } = storeToRefs(player)
 const folders = ref<FavoriteFolder[]>([])
 const activeFolderDetail = ref<FavoriteFolder | null>(null)
 const activeTracks = ref<Track[]>([])
+const folderQuery = ref('')
+const trackQuery = ref('')
 const folderLoading = ref(false)
 const trackLoading = ref(false)
 const importing = ref(false)
@@ -146,6 +167,19 @@ const activeFolder = computed(() => {
 })
 
 const activeCover = computed(() => activeFolder.value?.cover || activeTracks.value[0]?.cover || '')
+const filteredFolders = computed(() => {
+  const keyword = folderQuery.value.trim().toLowerCase()
+  if (!keyword) return folders.value
+  return folders.value.filter((folder) => [
+    folder.title,
+    String(folder.mediaId),
+  ].some((value) => value.toLowerCase().includes(keyword)))
+})
+const filteredActiveTracks = computed(() => {
+  const keyword = trackQuery.value.trim().toLowerCase()
+  if (!keyword) return activeTracks.value
+  return activeTracks.value.filter((track) => matchesTrack(track, keyword))
+})
 
 watch(
   () => activeFolderId.value,
@@ -156,6 +190,7 @@ watch(
     } else {
       activeFolderDetail.value = null
       activeTracks.value = []
+      trackQuery.value = ''
       activePage.value = 1
       favoriteHasMore.value = false
     }
@@ -255,7 +290,16 @@ function isSameTrack(a: Track, b: Track): boolean {
 }
 
 function playAll() {
-  if (activeTracks.value.length) player.playList(activeTracks.value, 0)
+  if (filteredActiveTracks.value.length) player.playList(filteredActiveTracks.value, 0)
+}
+
+function matchesTrack(track: Track, keyword: string): boolean {
+  return [
+    track.title,
+    track.owner,
+    track.bvid,
+    track.pageTitle ?? '',
+  ].some((value) => value.toLowerCase().includes(keyword))
 }
 
 async function importAsPlaylist() {
@@ -326,6 +370,46 @@ async function importAsPlaylist() {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 20px;
+}
+
+.local-search {
+  width: min(560px, 100%);
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-content);
+  color: var(--color-text-tertiary);
+}
+
+.local-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.local-search button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.local-search button:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
 }
 
 .folder-card {
@@ -510,6 +594,11 @@ async function importAsPlaylist() {
 
 .error-text {
   color: var(--color-primary);
+  font-size: 13px;
+}
+
+.empty-filter {
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 

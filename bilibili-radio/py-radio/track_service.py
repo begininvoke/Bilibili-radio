@@ -74,10 +74,12 @@ def format_pubdate(value: Any) -> Optional[str]:
 
 
 def normalize_search_item(item: dict[str, Any]) -> Track:
+    owner_mid = item.get("mid") or item.get("owner", {}).get("mid")
     return Track(
         bvid=str(item.get("bvid") or item.get("arcurl", "").split("/")[-1]).strip(),
         title=clean_text(item.get("title")),
         owner=clean_text(item.get("author") or item.get("owner", {}).get("name")),
+        owner_mid=int(owner_mid) if owner_mid not in (None, "") else None,
         cover=normalize_cover(item.get("pic")),
         duration=parse_duration(item.get("duration")),
         play_count=int(item.get("play") or item.get("play_count") or 0),
@@ -89,6 +91,7 @@ def normalize_video_detail(data: dict[str, Any]) -> VideoDetail:
     bvid = normalize_bvid(str(data.get("bvid", "")))
     title = clean_text(data.get("title"))
     owner = clean_text(data.get("owner", {}).get("name"))
+    owner_mid = data.get("owner", {}).get("mid")
     cover = normalize_cover(data.get("pic"))
     duration = parse_duration(data.get("duration"))
     play_count = int(data.get("stat", {}).get("view") or 0)
@@ -101,6 +104,7 @@ def normalize_video_detail(data: dict[str, Any]) -> VideoDetail:
         title=title,
         duration=duration,
         owner=owner,
+        owner_mid=int(owner_mid) if owner_mid not in (None, "") else None,
         cover=cover,
         play_count=play_count,
         published_at=published_at,
@@ -119,6 +123,7 @@ def normalize_video_detail(data: dict[str, Any]) -> VideoDetail:
                 cid=cid,
                 title=track_title,
                 owner=owner,
+                owner_mid=int(owner_mid) if owner_mid not in (None, "") else None,
                 cover=page_cover,
                 duration=parse_duration(page_item.get("duration")),
                 play_count=play_count,
@@ -165,11 +170,13 @@ def normalize_favorite_media_item(item: dict[str, Any]) -> Optional[Track]:
         return None
 
     upper = item.get("upper") or item.get("owner") or {}
+    owner_mid = upper.get("mid")
     cnt_info = item.get("cnt_info") or item.get("stat") or {}
     return Track(
         bvid=bvid,
         title=clean_text(item.get("title")),
         owner=clean_text(upper.get("name")),
+        owner_mid=int(owner_mid) if owner_mid not in (None, "") else None,
         cover=normalize_cover(item.get("cover") or item.get("pic")),
         duration=parse_duration(item.get("duration")),
         play_count=int(cnt_info.get("play") or cnt_info.get("view") or 0),
@@ -341,6 +348,33 @@ def normalize_reply_comments(
         "hasMore": not bool(cursor.get("is_end")),
         "comments": comments,
     }
+
+
+def normalize_space_profile(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mid": int(data.get("mid") or 0),
+        "name": clean_text(data.get("name")),
+        "face": normalize_cover(data.get("face")),
+        "sign": str(data.get("sign") or "").strip(),
+        "level": int((data.get("level_info") or {}).get("current_level") or data.get("level") or 0),
+    }
+
+
+def normalize_space_archive_item(item: dict[str, Any], owner: dict[str, Any]) -> Optional[Track]:
+    bvid = str(item.get("bvid") or "").strip()
+    if not bvid:
+        return None
+    stat = item.get("stat") or {}
+    return Track(
+        bvid=bvid,
+        title=clean_text(item.get("title")),
+        owner=clean_text(owner.get("name")),
+        owner_mid=int(owner.get("mid") or 0) or None,
+        cover=normalize_cover(item.get("pic")),
+        duration=parse_duration(item.get("duration") or item.get("length")),
+        play_count=int(stat.get("view") or item.get("play") or 0),
+        published_at=format_pubdate(item.get("pubdate") or item.get("created")),
+    )
 
 
 def cover_info_from_video_data(data: dict[str, Any], cid: Optional[int] = None) -> dict[str, Any]:

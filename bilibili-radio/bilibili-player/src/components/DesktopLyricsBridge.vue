@@ -9,12 +9,21 @@ import { usePlayerStore } from '@/stores/playerStore'
 import { useUiStore } from '@/stores/uiStore'
 
 const LYRICS_READY_EVENT = 'desktop-lyrics:ready'
+const LYRICS_CONTROL_EVENT = 'desktop-lyrics:control'
+
+type LyricsControlAction = 'toggle-play' | 'prev' | 'next' | 'font-smaller' | 'font-larger' | 'close'
 
 interface LyricsPayload {
   enabled: boolean
   text: string
   color: string
+  fontSize: number
   title: string
+  isPlaying: boolean
+}
+
+interface LyricsControlPayload {
+  action: LyricsControlAction
 }
 
 interface LyricsWindowDebug {
@@ -28,9 +37,10 @@ interface LyricsWindowDebug {
 
 const player = usePlayerStore()
 const ui = useUiStore()
-const { currentTrack, videoInfo, desktopLyricText } = storeToRefs(player)
+const { currentTrack, videoInfo, desktopLyricText, isPlaying, playRequestSerial } = storeToRefs(player)
 
 let unlistenReady: (() => void) | null = null
+let unlistenControl: (() => void) | null = null
 let lastPayloadKey = ''
 let publishRetryTimers: number[] = []
 
@@ -61,7 +71,7 @@ watch(
 )
 
 watch(
-  trackKey,
+  [trackKey, playRequestSerial],
   () => {
     if (!ui.lyricsOverlayEnabled) return
     void player.loadCurrentSubtitles(true).finally(() => {
@@ -71,7 +81,7 @@ watch(
 )
 
 watch(
-  [desktopLyricText, () => ui.lyricsOverlayColor, trackTitle],
+  [desktopLyricText, () => ui.lyricsOverlayColor, () => ui.lyricsOverlayFontSize, trackTitle, isPlaying],
   () => {
     if (!ui.lyricsOverlayEnabled) return
     void publishLyricsState()
@@ -82,6 +92,7 @@ onBeforeUnmount(() => {
   clearPublishRetryTimers()
   void hideLyricsWindow()
   unlistenReady?.()
+  unlistenControl?.()
 })
 
 async function showLyricsWindow() {
@@ -93,7 +104,9 @@ async function showLyricsWindow() {
       enabled: payload.enabled,
       text: payload.text,
       color: payload.color,
+      fontSize: payload.fontSize,
       title: payload.title,
+      isPlaying: payload.isPlaying,
     })
     console.info('[desktop-lyrics] bridge show', debug)
   } catch (error) {
@@ -126,7 +139,9 @@ async function publishLyricsState(force = false) {
       enabled: payload.enabled,
       text: payload.text,
       color: payload.color,
+      fontSize: payload.fontSize,
       title: payload.title,
+      isPlaying: payload.isPlaying,
     })
     console.info('[desktop-lyrics] bridge payload', debug)
   } catch (error) {
@@ -157,17 +172,48 @@ function currentLyricsPayload(): LyricsPayload {
     enabled: ui.lyricsOverlayEnabled,
     text: desktopLyricText.value || '-',
     color: ui.lyricsOverlayColor,
+    fontSize: ui.lyricsOverlayFontSize,
     title: trackTitle.value,
+    isPlaying: isPlaying.value,
   }
 }
 
 async function bindLyricsWindowEvents() {
-  if (unlistenReady) return
+  if (unlistenReady && unlistenControl) return
   const { listen } = await import('@tauri-apps/api/event')
   if (!unlistenReady) {
     unlistenReady = await listen(LYRICS_READY_EVENT, () => {
       void publishLyricsState(true)
     })
+  }
+  if (!unlistenControl) {
+    unlistenControl = await listen<LyricsControlPayload>(LYRICS_CONTROL_EVENT, (event) => {
+      handleLyricsControl(event.payload)
+    })
+  }
+}
+
+function handleLyricsControl(payload: LyricsControlPayload) {
+  switch (payload.action) {
+    case 'toggle-play':
+      player.togglePlayPause()
+      break
+    case 'prev':
+      player.prev()
+      break
+    case 'next':
+      player.next()
+      break
+    case 'font-smaller':
+      ui.decreaseLyricsOverlayFontSize()
+      break
+    case 'font-larger':
+      ui.increaseLyricsOverlayFontSize()
+      break
+    case 'close':
+      ui.setLyricsOverlayEnabled(false)
+      void hideLyricsWindow()
+      break
   }
 }
 

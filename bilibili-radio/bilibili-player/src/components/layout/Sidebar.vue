@@ -60,13 +60,6 @@
       <p v-if="library.playlists.length === 0" class="no-playlist">还没有歌单，点上方 + 新建</p>
     </nav>
 
-    <nav v-if="auth.isAdmin" class="nav admin-nav">
-      <RouterLink to="/admin" class="nav-item" :class="{ active: isActive('/admin') }" @click="emit('navigate')">
-        <span class="indicator" />
-        <AppIcon name="shield" :size="18" />
-        <span class="nav-label">管理控制台</span>
-      </RouterLink>
-    </nav>
   </aside>
 
   <Teleport to="body">
@@ -103,13 +96,11 @@
 import { nextTick, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useLibraryStore } from '@/stores/libraryStore'
-import { useAuthStore } from '@/stores/authStore'
 import AppIcon from '@/components/base/AppIcon.vue'
 import iconUrl from '@/assets/icon.png'
 
 const route = useRoute()
 const library = useLibraryStore()
-const auth = useAuthStore()
 const emit = defineEmits<{ navigate: [] }>()
 
 const playlistDialogOpen = ref(false)
@@ -288,11 +279,6 @@ function confirmCreatePlaylist() {
 
 .playlists {
   flex: 1;
-}
-
-.admin-nav {
-  padding-top: 10px;
-  border-top: 1px solid var(--color-border);
 }
 
 .no-playlist {

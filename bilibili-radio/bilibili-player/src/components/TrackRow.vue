@@ -26,7 +26,16 @@
         <div class="row-title" :class="{ 'is-current': isCurrent }" :title="track.title">
           {{ track.title }}
         </div>
-        <div class="row-owner" :class="{ preparing: isPreparingPlay }">
+        <button
+          v-if="track.bvid && !isPreparingPlay"
+          class="row-owner owner-link"
+          type="button"
+          :title="`打开 UP 主页：${track.owner}`"
+          @click.stop="openOwner"
+        >
+          {{ track.owner }}
+        </button>
+        <div v-else class="row-owner" :class="{ preparing: isPreparingPlay }">
           {{ isPreparingPlay ? '正在准备播放' : track.owner }}
         </div>
       </div>
@@ -115,6 +124,7 @@
 import { computed, ref } from 'vue'
 import type { Track } from '@/types'
 import { getTrackDetail, mediaUrl } from '@/api/client'
+import { useOpenOwner } from '@/composables/useOpenOwner'
 import { useLibraryStore } from '@/stores/libraryStore'
 import { usePlayerStore } from '@/stores/playerStore'
 import { formatDuration } from '@/utils/format'
@@ -124,6 +134,13 @@ import PlayingBars from '@/components/base/PlayingBars.vue'
 
 const DETAIL_TIMEOUT_MS = 10000
 const partCache = new Map<string, Track[]>()
+
+type TrackWithLegacyOwner = Track & {
+  owner_mid?: unknown
+  mid?: unknown
+  upper?: { mid?: unknown } | null
+  ownerInfo?: { mid?: unknown } | null
+}
 
 const props = defineProps<{
   track: Track
@@ -143,6 +160,7 @@ const emit = defineEmits<{
 
 const player = usePlayerStore()
 const library = useLibraryStore()
+const { openTrackOwner } = useOpenOwner()
 
 const parts = ref<Track[]>([])
 const partsOpen = ref(false)
@@ -326,9 +344,17 @@ function enqueuePart(part: Track) {
 }
 
 function enqueueParts(pageTracks: Track[]) {
-  for (const part of pageTracks) {
-    player.enqueue(part)
-  }
+  player.enqueueTracks(pageTracks)
+}
+
+function openOwner() {
+  void openTrackOwner(props.track).then((opened) => {
+    if (!opened) {
+      player.statusMessage = '无法打开 UP 主页：缺少 UP 主 ID'
+    }
+  }).catch((error) => {
+    player.statusMessage = error instanceof Error ? error.message : '无法打开 UP 主页'
+  })
 }
 
 function toggleLikePart(part: Track) {
@@ -354,12 +380,27 @@ function normalizeParts(detailParts: Track[]): Track[] {
       ...part,
       cover: part.cover || props.track.cover,
       owner: part.owner || props.track.owner,
+      ownerMid: ownerMidFromTrack(part) ?? ownerMidFromTrack(props.track),
       playCount: part.playCount ?? props.track.playCount,
       publishedAt: part.publishedAt ?? props.track.publishedAt,
       source: part.source ?? props.track.source,
       pageCount,
       isMultipart: pageCount > 1,
     }))
+}
+
+function ownerMidFromTrack(track: Track): number | null {
+  const raw = track as TrackWithLegacyOwner
+  return normalizedMid(raw.ownerMid)
+    ?? normalizedMid(raw.owner_mid)
+    ?? normalizedMid(raw.mid)
+    ?? normalizedMid(raw.upper?.mid)
+    ?? normalizedMid(raw.ownerInfo?.mid)
+}
+
+function normalizedMid(value: unknown): number | null {
+  const mid = Number(value)
+  return Number.isFinite(mid) && mid > 0 ? mid : null
 }
 
 function loadTrackParts(bvid: string): Promise<Track[]> {
@@ -482,6 +523,20 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.owner-link {
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.owner-link:hover {
+  color: var(--color-primary);
 }
 
 .row-owner.preparing {

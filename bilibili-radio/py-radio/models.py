@@ -23,6 +23,7 @@ class Track:
     bvid: str
     title: str
     owner: str = ""
+    owner_mid: Optional[int] = None
     cover: str = ""
     duration: int = 0
     cid: Optional[int] = None
@@ -48,6 +49,11 @@ class Track:
             cid=int(cid) if cid not in (None, "") else None,
             title=str(payload.get("title", "")).strip(),
             owner=str(payload.get("owner", "")).strip(),
+            owner_mid=(
+                int(payload.get("ownerMid") or payload.get("owner_mid"))
+                if payload.get("ownerMid") or payload.get("owner_mid")
+                else None
+            ),
             cover=str(payload.get("cover", "")).strip(),
             duration=int(payload.get("duration") or 0),
             play_count=int(payload.get("playCount") or payload.get("play_count") or 0),
@@ -64,6 +70,7 @@ class Track:
             "cid": self.cid,
             "title": self.title,
             "owner": self.owner,
+            "ownerMid": self.owner_mid,
             "cover": self.cover,
             "duration": self.duration,
             "playCount": self.play_count,
@@ -82,6 +89,7 @@ class VideoInfo:
     duration: int
     owner: str
     cover: str
+    owner_mid: Optional[int] = None
     play_count: int = 0
     published_at: Optional[str] = None
 
@@ -91,6 +99,7 @@ class VideoInfo:
             cid=self.cid,
             title=self.title,
             owner=self.owner,
+            owner_mid=self.owner_mid,
             cover=self.cover,
             duration=self.duration,
             play_count=self.play_count,
@@ -169,6 +178,7 @@ class AudioStreamInfo:
     codec: str = "aac"
     fallback: bool = False
     stream_id: Optional[int] = None
+    available_qualities: Optional[list[str]] = None
 
     @property
     def stream_identity(self) -> str:
@@ -189,4 +199,5 @@ class AudioStreamInfo:
             "codec": self.codec,
             "fallback": self.fallback,
             "streamId": self.stream_id,
+            "availableAudioQualities": self.available_qualities or [],
         }

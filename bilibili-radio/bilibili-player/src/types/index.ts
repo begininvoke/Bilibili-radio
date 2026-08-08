@@ -5,9 +5,13 @@ export interface VideoInfo {
   title: string
   duration: number
   owner: string
+  ownerMid?: number | null
   cover: string
   playCount?: number
   recentPlayCount?: number
+  positionMs?: number
+  listenMs?: number
+  completed?: boolean
   publishedAt?: string | null
 }
 
@@ -25,7 +29,10 @@ export interface AudioStreamInfo {
   fallback?: boolean
   bvid?: string
   cid?: number
+  availableAudioQualities?: AudioQualityPreference[]
 }
+
+export type AudioQualityPreference = 'auto' | '64k' | '132k' | '192k' | 'dolby' | 'hires'
 
 /** 播放队列中的一条曲目，也用于最近播放、收藏、歌单 */
 export interface Track {
@@ -34,10 +41,14 @@ export interface Track {
   cid?: number | null
   title: string
   owner: string
+  ownerMid?: number | null
   cover: string
   duration: number
   playCount?: number
   recentPlayCount?: number
+  positionMs?: number
+  listenMs?: number
+  completed?: boolean
   publishedAt?: string | null
   page?: number | null
   pageTitle?: string | null
@@ -273,6 +284,30 @@ export interface TrackReview {
   updatedAt: string
 }
 
+export interface AppSettings {
+  audioQualityPreference: AudioQualityPreference
+  playbackSpeed: number
+}
+
+export interface BiliUpProfile {
+  mid: number
+  name: string
+  face: string
+  sign: string
+  level?: number
+}
+
+export interface BiliUpTracksResult {
+  mid: number
+  page: number
+  pageSize: number
+  order: 'pubdate' | 'click'
+  total: number
+  hasMore: boolean
+  profile: BiliUpProfile
+  tracks: Track[]
+}
+
 export interface RecommendationItem {
   track: Track
   score: number
@@ -347,6 +382,8 @@ export interface Playlist {
   id: string
   name: string
   cover: string | null
+  sourceType?: 'user-created' | 'bilibili-multipage' | 'bilibili-favorite'
+  sourceBvid?: string | null
   tracks: Track[]
   createdAt: number | string
   updatedAt?: string

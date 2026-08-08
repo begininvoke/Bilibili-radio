@@ -67,19 +67,15 @@
           :title="`应用账户：${auth.appUser?.displayName ?? ''}`"
           @click="accountOpen = !accountOpen"
         >
-          <AppIcon :name="auth.isAdmin ? 'shield' : 'user'" :size="17" />
+          <AppIcon name="user" :size="17" />
           <span>{{ accountInitial }}</span>
         </button>
         <Transition name="account-menu">
           <div v-if="accountOpen" class="account-menu" role="menu">
             <div class="account-identity">
               <strong>{{ auth.appUser?.displayName }}</strong>
-              <span>{{ auth.isAdmin ? '管理员' : '用户' }}</span>
+              <span>用户</span>
             </div>
-            <RouterLink v-if="auth.isAdmin" to="/admin" class="menu-item" role="menuitem" @click="accountOpen = false">
-              <AppIcon name="activity" :size="16" />
-              <span>管理控制台</span>
-            </RouterLink>
             <button class="menu-item" role="menuitem" @click="logoutApp">
               <AppIcon name="logout" :size="16" />
               <span>退出应用账户</span>
@@ -93,7 +89,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSearchHistory, useSearchHistoryMenu } from '@/composables/useSearchHistory'

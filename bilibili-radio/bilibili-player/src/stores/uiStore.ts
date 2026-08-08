@@ -5,7 +5,11 @@ type Theme = 'light' | 'dark'
 
 const THEME_KEY = 'bili-radio:theme'
 const LYRICS_OVERLAY_COLOR_KEY = 'bili-radio:lyrics-overlay-color'
+const LYRICS_OVERLAY_FONT_SIZE_KEY = 'bili-radio:lyrics-overlay-font-size'
 const DEFAULT_LYRICS_OVERLAY_COLOR = '#fb7299'
+const DEFAULT_LYRICS_OVERLAY_FONT_SIZE = 30
+const MIN_LYRICS_OVERLAY_FONT_SIZE = 22
+const MAX_LYRICS_OVERLAY_FONT_SIZE = 48
 const LYRICS_OVERLAY_COLORS = ['#fb7299', '#ffffff', '#ffd166', '#66e3ff', '#8ef08e', '#c7a6ff']
 
 function applyTheme(theme: Theme) {
@@ -14,6 +18,11 @@ function applyTheme(theme: Theme) {
 
 function detectReducedMotion(): boolean {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
+
+function clampLyricsFontSize(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_LYRICS_OVERLAY_FONT_SIZE
+  return Math.max(MIN_LYRICS_OVERLAY_FONT_SIZE, Math.min(MAX_LYRICS_OVERLAY_FONT_SIZE, Math.round(value)))
 }
 
 export const useUiStore = defineStore('ui', () => {
@@ -29,6 +38,9 @@ export const useUiStore = defineStore('ui', () => {
       ? storedLyricsColor
       : DEFAULT_LYRICS_OVERLAY_COLOR
   )
+  const lyricsOverlayFontSize = ref(
+    clampLyricsFontSize(Number(localStorage.getItem(LYRICS_OVERLAY_FONT_SIZE_KEY) ?? DEFAULT_LYRICS_OVERLAY_FONT_SIZE))
+  )
 
   applyTheme(theme.value)
 
@@ -39,6 +51,10 @@ export const useUiStore = defineStore('ui', () => {
 
   watch(lyricsOverlayColor, (value) => {
     localStorage.setItem(LYRICS_OVERLAY_COLOR_KEY, value)
+  })
+
+  watch(lyricsOverlayFontSize, (value) => {
+    localStorage.setItem(LYRICS_OVERLAY_FONT_SIZE_KEY, String(value))
   })
 
   function toggleTheme() {
@@ -71,6 +87,18 @@ export const useUiStore = defineStore('ui', () => {
     }
   }
 
+  function setLyricsOverlayFontSize(value: number) {
+    lyricsOverlayFontSize.value = clampLyricsFontSize(value)
+  }
+
+  function increaseLyricsOverlayFontSize() {
+    setLyricsOverlayFontSize(lyricsOverlayFontSize.value + 2)
+  }
+
+  function decreaseLyricsOverlayFontSize() {
+    setLyricsOverlayFontSize(lyricsOverlayFontSize.value - 2)
+  }
+
   return {
     theme,
     queueOpen,
@@ -78,6 +106,7 @@ export const useUiStore = defineStore('ui', () => {
     reducedMotion,
     lyricsOverlayEnabled,
     lyricsOverlayColor,
+    lyricsOverlayFontSize,
     lyricsOverlayColors: LYRICS_OVERLAY_COLORS,
     toggleTheme,
     toggleQueue,
@@ -86,5 +115,8 @@ export const useUiStore = defineStore('ui', () => {
     toggleLyricsOverlay,
     setLyricsOverlayEnabled,
     setLyricsOverlayColor,
+    setLyricsOverlayFontSize,
+    increaseLyricsOverlayFontSize,
+    decreaseLyricsOverlayFontSize,
   }
 })

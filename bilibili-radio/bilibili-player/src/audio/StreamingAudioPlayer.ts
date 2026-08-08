@@ -4,6 +4,7 @@ class StreamingAudioPlayer {
   private audioElement: HTMLAudioElement | null = null
   private volume = 1.0
   private isMuted = false
+  private playbackRate = 1.0
 
   private _onStateChange: ((playing: boolean) => void) | null = null
   private _onTimeUpdate: ((currentTime: number, duration: number) => void) | null = null
@@ -15,6 +16,7 @@ class StreamingAudioPlayer {
     try {
       this.audioElement = new Audio()
       this.audioElement.crossOrigin = 'anonymous'
+      this.applyPlaybackRate()
 
       this.audioElement.addEventListener('play', () => {
         if (this._onStateChange) {
@@ -68,6 +70,7 @@ class StreamingAudioPlayer {
 
     console.log('[StreamingAudioPlayer] Loading stream:', streamInfo.url)
     this.audioElement.src = streamInfo.url
+    this.applyPlaybackRate()
     this.audioElement.load()
   }
 
@@ -119,6 +122,24 @@ class StreamingAudioPlayer {
     if (this.audioElement && !this.isMuted) {
       this.audioElement.volume = this.volume
     }
+  }
+
+  setPlaybackRate(rate: number) {
+    this.playbackRate = Math.max(0.5, Math.min(2, rate))
+    this.applyPlaybackRate()
+  }
+
+  private applyPlaybackRate() {
+    if (!this.audioElement) return
+    this.audioElement.playbackRate = this.playbackRate
+    const audio = this.audioElement as HTMLAudioElement & {
+      preservesPitch?: boolean
+      mozPreservesPitch?: boolean
+      webkitPreservesPitch?: boolean
+    }
+    audio.preservesPitch = true
+    audio.mozPreservesPitch = true
+    audio.webkitPreservesPitch = true
   }
 
   getVolume(): number {

@@ -99,6 +99,8 @@ const ICONS: Record<string, IconDef> = {
   fullscreen: { paths: ['M4 9V4h5', 'M20 9V4h-5', 'M4 15v5h5', 'M20 15v5h-5'] },
   subtitle: { paths: ['M4 6h16v12H4z', 'M7 13h3', 'M13 13h4', 'M7 16h6'] },
   pip: { paths: ['M3 5h18v14H3z', 'M12 12h7v5h-7z'] },
+  lock: { paths: ['M7 11V8a5 5 0 0 1 10 0v3', 'M6 11h12v10H6z'] },
+  unlock: { paths: ['M7 11V8a5 5 0 0 1 9.2-2.8', 'M6 11h12v10H6z'] },
   more: { paths: [], circles: [{ cx: 5, cy: 12, r: 1.4, fill: 'currentColor' }, { cx: 12, cy: 12, r: 1.4, fill: 'currentColor' }, { cx: 19, cy: 12, r: 1.4, fill: 'currentColor' }] },
   shield: { paths: ['M12 3 20 6v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3z', 'M9 12l2 2 4-4'] },
   user: { paths: ['M4 21a8 8 0 0 1 16 0'], circles: [{ cx: 12, cy: 7, r: 4 }] },

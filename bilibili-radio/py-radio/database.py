@@ -102,6 +102,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 cid INTEGER,
                 title TEXT NOT NULL,
                 owner TEXT NOT NULL DEFAULT '',
+                owner_mid INTEGER,
                 cover TEXT NOT NULL DEFAULT '',
                 duration INTEGER NOT NULL DEFAULT 0,
                 play_count INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +137,8 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 cover TEXT,
+                source_type TEXT NOT NULL DEFAULT 'user-created',
+                source_bvid TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -333,7 +336,46 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 conn.execute('PRAGMA user_version = 6')
                 current_version = 6
 
+            if current_version < 7:
+                _add_column_if_missing(conn, "tracks", "owner_mid", "INTEGER")
+                _add_column_if_missing(
+                    conn,
+                    "playlists",
+                    "source_type",
+                    "TEXT NOT NULL DEFAULT 'user-created'",
+                )
+                _add_column_if_missing(conn, "playlists", "source_bvid", "TEXT")
+                conn.execute('PRAGMA user_version = 7')
+                current_version = 7
+
+            _ensure_current_schema_columns(conn)
+
         _initialized_paths.add(path)
+
+
+def _ensure_current_schema_columns(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "tracks", "owner_mid", "INTEGER")
+    _add_column_if_missing(
+        conn,
+        "playlists",
+        "source_type",
+        "TEXT NOT NULL DEFAULT 'user-created'",
+    )
+    _add_column_if_missing(conn, "playlists", "source_bvid", "TEXT")
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_definition: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
 
 def _migrate_to_v4(conn: sqlite3.Connection) -> None:

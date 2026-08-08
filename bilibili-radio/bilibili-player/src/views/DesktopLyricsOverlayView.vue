@@ -1,25 +1,21 @@
 <template>
   <main class="lyrics-window">
-    <div class="lyrics-shell" :style="shellStyle" data-tauri-drag-region @mousedown="startWindowDrag">
+    <div class="lyrics-shell" :style="shellStyle" @mousedown="startWindowDrag">
       <div
         class="drag-border drag-border-top"
         title="拖动桌面歌词"
-        data-tauri-drag-region
       />
       <div
         class="drag-border drag-border-right"
         title="拖动桌面歌词"
-        data-tauri-drag-region
       />
       <div
         class="drag-border drag-border-bottom"
         title="拖动桌面歌词"
-        data-tauri-drag-region
       />
       <div
         class="drag-border drag-border-left"
         title="拖动桌面歌词"
-        data-tauri-drag-region
       />
       <p
         class="lyrics-text"
@@ -29,31 +25,65 @@
       >
         {{ state.text || '-' }}
       </p>
+      <div class="lyrics-controls" @mousedown.stop @click.stop>
+        <button class="lyrics-control" type="button" title="上一首" @click="sendControl('prev')">
+          <AppIcon name="skip-back" :size="15" />
+        </button>
+        <button class="lyrics-control primary" type="button" :title="state.isPlaying ? '暂停' : '播放'" @click="sendControl('toggle-play')">
+          <AppIcon :name="state.isPlaying ? 'pause' : 'play'" :size="15" />
+        </button>
+        <button class="lyrics-control" type="button" title="下一首" @click="sendControl('next')">
+          <AppIcon name="skip-forward" :size="15" />
+        </button>
+        <button class="lyrics-control text-control" type="button" title="减小字幕" @click="sendControl('font-smaller')">
+          A-
+        </button>
+        <button class="lyrics-control text-control" type="button" title="放大字幕" @click="sendControl('font-larger')">
+          A+
+        </button>
+        <button class="lyrics-control" type="button" :title="locked ? '解锁位置' : '锁定位置'" @click="toggleLocked">
+          <AppIcon :name="locked ? 'unlock' : 'lock'" :size="15" />
+        </button>
+        <button class="lyrics-control danger" type="button" title="关闭悬浮歌词" @click="sendControl('close')">
+          <AppIcon name="close" :size="15" />
+        </button>
+      </div>
     </div>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { CSSProperties } from 'vue'
+import AppIcon from '@/components/base/AppIcon.vue'
+import { emitTo } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const LYRICS_UPDATE_EVENT = 'desktop-lyrics:update'
 const LYRICS_READY_EVENT = 'desktop-lyrics:ready'
+const LYRICS_CONTROL_EVENT = 'desktop-lyrics:control'
+const LYRICS_LOCK_KEY = 'bili-radio:desktop-lyrics-locked'
+
+type LyricsControlAction = 'toggle-play' | 'prev' | 'next' | 'font-smaller' | 'font-larger' | 'close'
 
 interface LyricsPayload {
   enabled: boolean
   text: string
   color: string
+  fontSize?: number
   title: string
+  isPlaying?: boolean
 }
 
 const state = reactive<LyricsPayload>({
   enabled: false,
   text: '-',
   color: '#fb7299',
+  fontSize: 30,
   title: '',
+  isPlaying: false,
 })
+const locked = ref(loadLockedState())
 
 let unlistenUpdate: (() => void) | null = null
 
@@ -61,6 +91,7 @@ const shellStyle = computed<CSSProperties>(
   () =>
     ({
       '--lyrics-color': state.color,
+      '--lyrics-font-size': `${state.fontSize ?? 30}px`,
     }) as CSSProperties
 )
 
@@ -96,17 +127,43 @@ function applyLyricsPayload(payload: LyricsPayload) {
   state.enabled = payload.enabled
   state.text = payload.text || '-'
   state.color = payload.color || '#fb7299'
+  state.fontSize = normalizeFontSize(payload.fontSize)
   state.title = payload.title || ''
+  state.isPlaying = payload.isPlaying ?? false
 }
 
 async function startWindowDrag(event: MouseEvent) {
-  if (!isDesktopRuntime() || event.button !== 0) return
+  if (!isDesktopRuntime() || locked.value || event.button !== 0) return
   event.preventDefault()
   try {
     await getCurrentWindow().startDragging()
   } catch (error) {
     console.warn('Failed to drag desktop lyrics window:', error)
   }
+}
+
+async function sendControl(action: LyricsControlAction) {
+  if (!isDesktopRuntime()) return
+  try {
+    await emitTo('main', LYRICS_CONTROL_EVENT, { action })
+  } catch (error) {
+    console.warn('Failed to send desktop lyrics control:', error)
+  }
+}
+
+function toggleLocked() {
+  locked.value = !locked.value
+  localStorage.setItem(LYRICS_LOCK_KEY, locked.value ? '1' : '0')
+}
+
+function loadLockedState(): boolean {
+  return localStorage.getItem(LYRICS_LOCK_KEY) === '1'
+}
+
+function normalizeFontSize(value: unknown): number {
+  const size = Number(value)
+  if (!Number.isFinite(size)) return 30
+  return Math.max(22, Math.min(48, Math.round(size)))
 }
 </script>
 
@@ -152,6 +209,75 @@ async function startWindowDrag(event: MouseEvent) {
   border-color: var(--lyrics-color, #fb7299);
 }
 
+.lyrics-controls {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.lyrics-shell:hover .lyrics-controls,
+.lyrics-controls:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.lyrics-controls:hover {
+  background: rgba(10, 10, 14, 0.48);
+}
+
+.lyrics-control {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 80ms ease;
+}
+
+.lyrics-control:hover {
+  border-color: color-mix(in srgb, var(--lyrics-color, #fb7299) 72%, #fff 28%);
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--lyrics-color, #fb7299);
+}
+
+.lyrics-control:active {
+  transform: scale(0.94);
+}
+
+.lyrics-control.primary {
+  border-color: color-mix(in srgb, var(--lyrics-color, #fb7299) 74%, #fff 26%);
+  background: var(--lyrics-color, #fb7299);
+  color: #fff;
+}
+
+.lyrics-control.danger:hover {
+  border-color: rgba(255, 95, 125, 0.85);
+  background: rgba(255, 95, 125, 0.24);
+  color: #fff;
+}
+
+.lyrics-control.text-control {
+  width: 30px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .drag-border {
   position: absolute;
   pointer-events: auto;
@@ -189,12 +315,12 @@ async function startWindowDrag(event: MouseEvent) {
 .lyrics-text {
   width: 100%;
   margin: 0;
-  padding: 0 22px;
+  padding: 0 188px 0 48px;
   overflow: hidden;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: clamp(22px, 4.2vw, 34px);
+  font-size: var(--lyrics-font-size, 30px);
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: 0;

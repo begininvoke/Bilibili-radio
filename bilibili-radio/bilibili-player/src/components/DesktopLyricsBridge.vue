@@ -43,6 +43,8 @@ let unlistenReady: (() => void) | null = null
 let unlistenControl: (() => void) | null = null
 let lastPayloadKey = ''
 let publishRetryTimers: number[] = []
+let bindPromise: Promise<void> | null = null
+let showPromise: Promise<void> | null = null
 
 const trackKey = computed(() => {
   const track = currentTrack.value
@@ -97,21 +99,27 @@ onBeforeUnmount(() => {
 
 async function showLyricsWindow() {
   if (!isDesktopRuntime() || !ui.lyricsOverlayEnabled) return
+  if (showPromise) return showPromise
   const payload = currentLyricsPayload()
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
-      enabled: payload.enabled,
-      text: payload.text,
-      color: payload.color,
-      fontSize: payload.fontSize,
-      title: payload.title,
-      isPlaying: payload.isPlaying,
-    })
-    console.info('[desktop-lyrics] bridge show', debug)
-  } catch (error) {
-    console.warn('Failed to show desktop lyrics window:', error)
-  }
+  showPromise = (async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
+        enabled: payload.enabled,
+        text: payload.text,
+        color: payload.color,
+        fontSize: payload.fontSize,
+        title: payload.title,
+        isPlaying: payload.isPlaying,
+      })
+      console.info('[desktop-lyrics] bridge show', debug)
+    } catch (error) {
+      console.warn('Failed to show desktop lyrics window:', error)
+    } finally {
+      showPromise = null
+    }
+  })()
+  return showPromise
 }
 
 async function hideLyricsWindow() {
@@ -180,23 +188,33 @@ function currentLyricsPayload(): LyricsPayload {
 
 async function bindLyricsWindowEvents() {
   if (unlistenReady && unlistenControl) return
-  const { listen } = await import('@tauri-apps/api/event')
-  if (!unlistenReady) {
-    unlistenReady = await listen(LYRICS_READY_EVENT, () => {
-      void publishLyricsState(true)
-    })
-  }
-  if (!unlistenControl) {
-    unlistenControl = await listen<LyricsControlPayload>(LYRICS_CONTROL_EVENT, (event) => {
-      handleLyricsControl(event.payload)
-    })
-  }
+  if (bindPromise) return bindPromise
+  bindPromise = (async () => {
+    const { listen } = await import('@tauri-apps/api/event')
+    if (!unlistenReady) {
+      unlistenReady = await listen(LYRICS_READY_EVENT, () => {
+        void publishLyricsState(true)
+      })
+    }
+    if (!unlistenControl) {
+      unlistenControl = await listen<LyricsControlPayload>(LYRICS_CONTROL_EVENT, (event) => {
+        handleLyricsControl(event.payload)
+      })
+    }
+  })().finally(() => {
+    bindPromise = null
+  })
+  return bindPromise
 }
 
 function handleLyricsControl(payload: LyricsControlPayload) {
   switch (payload.action) {
     case 'toggle-play':
-      player.togglePlayPause()
+      if (player.status === 'playing') {
+        player.pause()
+      } else if (player.status === 'paused') {
+        player.resume()
+      }
       break
     case 'prev':
       player.prev()

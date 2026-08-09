@@ -8,7 +8,8 @@ from error_code import APIError
 from library_service import LibraryService, utc_now
 
 
-HIGH_VALUE_LISTEN_MS = 15_000
+RECENT_RECORD_RATIO = 0.1
+QUICK_SKIP_MS = 15_000
 COMPLETE_REMAINING_MS = 30_000
 
 
@@ -42,7 +43,9 @@ class PlaybackService:
             position_ms=position_ms,
             duration_seconds=track.duration,
         )
-        skipped = event in {"skip", "next", "change", "stop"} and listen_ms < HIGH_VALUE_LISTEN_MS and not completed
+        recent_threshold_ms = self._recent_threshold_ms(track.duration)
+        qualifies_for_recent = listen_ms >= recent_threshold_ms or completed
+        skipped = event in {"skip", "next", "change", "stop"} and listen_ms < QUICK_SKIP_MS and not completed
         now = utc_now()
         ended_at = now if event in {"pause", "end", "ended", "skip", "next", "stop"} else None
 
@@ -97,7 +100,7 @@ class PlaybackService:
                     ),
                 )
 
-            if listen_ms >= HIGH_VALUE_LISTEN_MS or completed:
+            if qualifies_for_recent:
                 conn.execute(
                     """
                     INSERT INTO playback_recent (
@@ -123,7 +126,7 @@ class PlaybackService:
                     ),
                 )
 
-        if listen_ms >= HIGH_VALUE_LISTEN_MS or completed:
+        if qualifies_for_recent:
             self.library.add_recent(track, position_ms, listen_ms, completed)
 
         return {
@@ -199,3 +202,9 @@ class PlaybackService:
         return position_ms >= duration_ms * 0.9 or (
             duration_ms > COMPLETE_REMAINING_MS and duration_ms - position_ms <= COMPLETE_REMAINING_MS
         )
+
+    @staticmethod
+    def _recent_threshold_ms(duration_seconds: int) -> int:
+        if duration_seconds <= 0:
+            return QUICK_SKIP_MS
+        return max(1_000, int(duration_seconds * 1000 * RECENT_RECORD_RATIO))

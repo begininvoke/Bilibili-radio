@@ -12,7 +12,9 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
+use tauri::{
+    Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewWindow,
+};
 
 const DEFAULT_DESKTOP_PORT: u16 = 41517;
 const LYRICS_WINDOW_LABEL: &str = "desktop-lyrics";
@@ -23,6 +25,10 @@ const LYRICS_WINDOW_BOTTOM_MARGIN: i32 = 96;
 const DEFAULT_LYRICS_FONT_SIZE: u32 = 30;
 const MIN_LYRICS_FONT_SIZE: u32 = 22;
 const MAX_LYRICS_FONT_SIZE: u32 = 48;
+const MIN_LYRICS_WINDOW_WIDTH: f64 = 760.0;
+const MAX_LYRICS_WINDOW_WIDTH: f64 = 1240.0;
+const MIN_LYRICS_WINDOW_HEIGHT: f64 = 92.0;
+const MAX_LYRICS_WINDOW_HEIGHT: f64 = 168.0;
 
 struct BackendState {
     endpoint: Mutex<Option<String>>,
@@ -138,13 +144,14 @@ fn show_lyrics_window(
     let mut debug = LyricsWindowDebug::new("show_lyrics_window", Some(true), &app);
     log_desktop_lyrics_debug("received show_lyrics_window command");
 
-    let window = ensure_lyrics_window(&app, &mut debug)?;
-    reveal_lyrics_window(&app, &window, &mut debug)?;
     let payload = state
         .lyrics_payload
         .lock()
         .map_err(|_| "Lyrics payload lock is poisoned".to_string())?
         .clone();
+    let window = ensure_lyrics_window(&app, &mut debug)?;
+    resize_lyrics_window_for_font(&app, &window, payload.font_size, &mut debug);
+    reveal_lyrics_window(&app, &window, &mut debug)?;
     record_step(
         &mut debug,
         "emit_payload",
@@ -218,6 +225,7 @@ fn set_lyrics_window_payload(
 
     if enabled {
         let window = ensure_lyrics_window(&app, &mut debug)?;
+        resize_lyrics_window_for_font(&app, &window, payload.font_size, &mut debug);
         reveal_lyrics_window(&app, &window, &mut debug)?;
     } else {
         record_text_step(&mut debug, "skip_reveal", true, "enabled=false");
@@ -371,7 +379,12 @@ fn configure_lyrics_window(window: &WebviewWindow, debug: &mut LyricsWindowDebug
 }
 
 fn position_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    let Some((x, y)) = lyrics_window_initial_position(app) else {
+    let size = window
+        .outer_size()
+        .ok()
+        .map(|size| (size.width as f64, size.height as f64))
+        .unwrap_or((LYRICS_WINDOW_WIDTH, LYRICS_WINDOW_HEIGHT));
+    let Some((x, y)) = lyrics_window_initial_position(app, size.0, size.1) else {
         return Ok(());
     };
     window
@@ -382,15 +395,102 @@ fn position_lyrics_window(app: &tauri::AppHandle, window: &WebviewWindow) -> Res
         .map_err(|error| error.to_string())
 }
 
-fn lyrics_window_initial_position(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+fn lyrics_window_initial_position(
+    app: &tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Option<(f64, f64)> {
     let monitor = app.primary_monitor().ok()??;
     let work_area = monitor.work_area();
-    let width = LYRICS_WINDOW_WIDTH.round() as i32;
-    let height = LYRICS_WINDOW_HEIGHT.round() as i32;
+    let width = width.round() as i32;
+    let height = height.round() as i32;
     let x = work_area.position.x + ((work_area.size.width as i32 - width) / 2).max(0);
     let y = work_area.position.y
         + (work_area.size.height as i32 - height - LYRICS_WINDOW_BOTTOM_MARGIN).max(0);
     Some((x as f64, y as f64))
+}
+
+fn resize_lyrics_window_for_font(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    font_size: u32,
+    debug: &mut LyricsWindowDebug,
+) {
+    let target = lyrics_window_size_for_font(font_size);
+    let current_size = window.outer_size().ok();
+    if current_size
+        .as_ref()
+        .is_some_and(|size| size.width == target.width && size.height == target.height)
+    {
+        record_text_step(debug, "resize_for_font", true, "skip; unchanged");
+        return;
+    }
+
+    let previous_position = window.outer_position().ok();
+    let previous_size = current_size;
+    let was_visible = window.is_visible().ok() == Some(true);
+    record_step(
+        debug,
+        "resize_for_font",
+        window
+            .set_size(Size::Physical(target))
+            .map_err(|error| error.to_string()),
+    );
+
+    let Some(position) = lyrics_window_position_after_resize(
+        app,
+        previous_position,
+        previous_size,
+        target,
+        was_visible,
+    ) else {
+        return;
+    };
+    record_step(
+        debug,
+        "reposition_after_resize",
+        window
+            .set_position(Position::Physical(position))
+            .map_err(|error| error.to_string()),
+    );
+}
+
+fn lyrics_window_size_for_font(font_size: u32) -> PhysicalSize<u32> {
+    let scale = normalized_lyrics_font_size(font_size) as f64 / DEFAULT_LYRICS_FONT_SIZE as f64;
+    PhysicalSize::new(
+        (LYRICS_WINDOW_WIDTH * scale)
+            .clamp(MIN_LYRICS_WINDOW_WIDTH, MAX_LYRICS_WINDOW_WIDTH)
+            .round() as u32,
+        (LYRICS_WINDOW_HEIGHT * scale)
+            .clamp(MIN_LYRICS_WINDOW_HEIGHT, MAX_LYRICS_WINDOW_HEIGHT)
+            .round() as u32,
+    )
+}
+
+fn lyrics_window_position_after_resize(
+    app: &tauri::AppHandle,
+    previous_position: Option<PhysicalPosition<i32>>,
+    previous_size: Option<PhysicalSize<u32>>,
+    target_size: PhysicalSize<u32>,
+    was_visible: bool,
+) -> Option<PhysicalPosition<i32>> {
+    if !was_visible {
+        let (x, y) = lyrics_window_initial_position(
+            app,
+            target_size.width as f64,
+            target_size.height as f64,
+        )?;
+        return Some(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    }
+
+    let previous_position = previous_position?;
+    let previous_size = previous_size?;
+    let center_x = previous_position.x as f64 + previous_size.width as f64 / 2.0;
+    let bottom_y = previous_position.y as f64 + previous_size.height as f64;
+    Some(PhysicalPosition::new(
+        (center_x - target_size.width as f64 / 2.0).round() as i32,
+        (bottom_y - target_size.height as f64).round() as i32,
+    ))
 }
 
 fn reveal_lyrics_window(

@@ -124,11 +124,14 @@ export interface FavoriteImportResult {
 
 export interface RecommendationEventPayload {
   trackId: string
-  event: 'shown' | 'played' | 'accepted' | 'dismissed' | 'dislike'
+  event: 'shown' | 'played' | 'accepted' | 'dismissed' | 'dislike' | 'skipped' | 'completed' | 'liked' | 'unliked' | 'collection_added'
   scene?: string
   source?: string
   reason?: string
   score?: number
+  playedSeconds?: number
+  completed?: boolean
+  skipped?: boolean
 }
 
 export function setApiCsrfToken(token: string | null | undefined): void {

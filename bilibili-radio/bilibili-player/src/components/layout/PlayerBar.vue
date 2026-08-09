@@ -73,6 +73,7 @@
           <AppIcon name="skip-forward" :size="20" />
         </button>
         <button
+          ref="queueButtonRef"
           class="icon-btn queue-btn"
           title="播放队列"
           :class="{ active: ui.queueOpen }"
@@ -151,11 +152,22 @@
         <AppIcon name="fullscreen" :size="18" />
       </button>
     </div>
+    <span
+      v-for="effect in queueAddEffects"
+      :key="effect.id"
+      class="queue-add-effect"
+      :style="{
+        left: `${effect.x}px`,
+        top: `${effect.y}px`,
+        '--queue-effect-dx': `${effect.dx}px`,
+        '--queue-effect-dy': `${effect.dy}px`,
+      }"
+    >+</span>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useLibraryStore } from '@/stores/libraryStore'
@@ -168,22 +180,16 @@ import LoadingDots from '@/components/base/LoadingDots.vue'
 import ProgressBar from '@/components/ProgressBar.vue'
 import VolumeControl from '@/components/VolumeControl.vue'
 
-interface LyricsWindowDebug {
-  action: string
-  requested_enabled?: boolean | null
-  status_before?: unknown
-  status_after_show?: unknown
-  status_after?: unknown
-  steps?: unknown[]
-}
-
 const player = usePlayerStore()
 const library = useLibraryStore()
 const ui = useUiStore()
 const { openTrackOwner } = useOpenOwner()
 
-const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading, desktopLyricText } =
+const { currentTrack, videoInfo, isPlaying, isLoading, isDownloading } =
   storeToRefs(player)
+const queueButtonRef = ref<HTMLElement | null>(null)
+const queueAddEffects = ref<Array<{ id: number; x: number; y: number; dx: number; dy: number }>>([])
+let queueEffectId = 0
 
 // 当前展示的曲目：优先队列曲目，否则回退到裸 videoInfo（直接输入播放的场景）
 const track = computed<Track | null>(() => {
@@ -248,6 +254,14 @@ const audioQualityOptions = computed(() => {
   return BASE_AUDIO_QUALITY_OPTIONS.filter((option) => !option.dynamic || available.has(option.value))
 })
 
+onMounted(() => {
+  window.addEventListener('bili-radio:queue-add-effect', handleQueueAddEffect)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('bili-radio:queue-add-effect', handleQueueAddEffect)
+})
+
 function toggleLike() {
   if (track.value) library.toggleLike(track.value)
 }
@@ -284,44 +298,33 @@ async function toggleDesktopLyrics() {
   if (enabled) {
     void player.loadCurrentSubtitles()
   }
-  await syncDesktopLyricsWindow(enabled)
 }
 
-async function setDesktopLyricsColor(color: string) {
+function setDesktopLyricsColor(color: string) {
   ui.setLyricsOverlayColor(color)
-  if (ui.lyricsOverlayEnabled) {
-    await syncDesktopLyricsWindow(true)
-  }
 }
 
-async function changeDesktopLyricsFontSize(delta: number) {
+function changeDesktopLyricsFontSize(delta: number) {
   ui.setLyricsOverlayFontSize(ui.lyricsOverlayFontSize + delta)
-  if (ui.lyricsOverlayEnabled) {
-    await syncDesktopLyricsWindow(true)
-  }
 }
 
-async function syncDesktopLyricsWindow(enabled: boolean) {
-  if (!isDesktop.value) return
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    if (!enabled) {
-      const debug = await invoke<LyricsWindowDebug>('hide_lyrics_window')
-      console.info('[desktop-lyrics] player bar hide', debug)
-      return
-    }
-    const debug = await invoke<LyricsWindowDebug>('set_lyrics_window_payload', {
-      enabled: true,
-      text: desktopLyricText.value || '-',
-      color: ui.lyricsOverlayColor,
-      fontSize: ui.lyricsOverlayFontSize,
-      title: track.value?.title ?? '',
-      isPlaying: isPlaying.value,
-    })
-    console.info('[desktop-lyrics] player bar show', debug)
-  } catch (error) {
-    console.warn('Failed to toggle desktop lyrics window:', error)
+function handleQueueAddEffect(event: Event) {
+  const detail = (event as CustomEvent<{ x?: number; y?: number }>).detail
+  const buttonRect = queueButtonRef.value?.getBoundingClientRect()
+  if (!buttonRect || typeof detail?.x !== 'number' || typeof detail?.y !== 'number') return
+  const targetX = buttonRect.left + buttonRect.width / 2
+  const targetY = buttonRect.top + buttonRect.height / 2
+  const effect = {
+    id: ++queueEffectId,
+    x: detail.x,
+    y: detail.y,
+    dx: targetX - detail.x,
+    dy: targetY - detail.y,
   }
+  queueAddEffects.value.push(effect)
+  window.setTimeout(() => {
+    queueAddEffects.value = queueAddEffects.value.filter((item) => item.id !== effect.id)
+  }, 720)
 }
 </script>
 
@@ -684,8 +687,42 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
   text-align: center;
 }
 
+.queue-add-effect {
+  position: fixed;
+  z-index: 10000;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  margin: -12px 0 0 -12px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 8px 22px rgba(251, 114, 153, 0.34);
+  animation: queue-add-fly 680ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
 .spin-slow {
   animation: spin-slow 1.2s linear infinite;
+}
+
+@keyframes queue-add-fly {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.7);
+  }
+  18% {
+    opacity: 1;
+    transform: translate3d(0, -10px, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--queue-effect-dx), var(--queue-effect-dy), 0) scale(0.42);
+  }
 }
 
 @keyframes spin-slow {
@@ -694,7 +731,10 @@ async function syncDesktopLyricsWindow(enabled: boolean) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spin-slow { animation: none; }
+  .spin-slow,
+  .queue-add-effect {
+    animation: none;
+  }
 }
 
 @media (max-width: 1180px) {

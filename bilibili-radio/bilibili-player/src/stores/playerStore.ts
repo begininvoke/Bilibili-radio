@@ -21,6 +21,7 @@ import {
   resolveTrackInput,
   savePlayerQueue,
   updateSettings,
+  recordRecommendationEvent,
 } from '@/api/client'
 import { streamingAudioPlayer } from '@/audio/StreamingAudioPlayer'
 import { useLibraryStore } from '@/stores/libraryStore'
@@ -31,7 +32,8 @@ const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const QUEUE_STORAGE_KEY = 'bili-radio:player-queue'
 const SETTINGS_STORAGE_KEY = 'bili-radio:player-settings'
 const QUEUE_SAVE_DEBOUNCE_MS = 300
-const RECENT_RECORD_RATIO = 0.8
+const RECENT_RECORD_RATIO = 0.1
+const QUICK_SKIP_SECONDS = 15
 
 function isPlayMode(value: unknown): value is PlayMode {
   return typeof value === 'string' && PLAY_MODES.includes(value as PlayMode)
@@ -133,6 +135,8 @@ export const usePlayerStore = defineStore('player', () => {
   let playbackRecentRecorded = false
   let playbackListenSeconds = 0
   let playbackLastPosition: number | null = null
+  let autoplaySeq: number | null = null
+  let playbackBehaviorRecorded = false
 
   const currentTrack = computed<Track | null>(() => {
     if (currentIndex.value < 0 || currentIndex.value >= queue.value.length) return null
@@ -318,6 +322,8 @@ export const usePlayerStore = defineStore('player', () => {
     })
 
     streamingAudioPlayer.onCanPlay(() => {
+      if (autoplaySeq !== playSeq || status.value !== 'loading') return
+      autoplaySeq = null
       streamingAudioPlayer.play()
     })
 
@@ -368,6 +374,7 @@ export const usePlayerStore = defineStore('player', () => {
   async function requestPlayTrack(track: Track) {
     const seq = ++playSeq
     playRequestSerial.value = seq
+    recordPlaybackBehaviorBeforeTrackChange()
     clearError()
     status.value = 'loading'
     statusMessage.value = '正在获取视频信息...'
@@ -376,6 +383,8 @@ export const usePlayerStore = defineStore('player', () => {
     playbackRecentRecorded = false
     playbackListenSeconds = 0
     playbackLastPosition = null
+    autoplaySeq = null
+    playbackBehaviorRecorded = false
     clearCurrentSubtitles()
     streamingAudioPlayer.stop()
 
@@ -406,8 +415,10 @@ export const usePlayerStore = defineStore('player', () => {
       playbackRecentRecorded = false
       playbackListenSeconds = 0
       playbackLastPosition = null
+      playbackBehaviorRecorded = false
 
       statusMessage.value = '正在缓冲音频...'
+      autoplaySeq = seq
       streamingAudioPlayer.loadStream(streamInfo)
       hydrateTrackMetadataInBackground(playableTrack, seq)
     } catch (error) {
@@ -460,18 +471,19 @@ export const usePlayerStore = defineStore('player', () => {
 
   /** 追加到队列末尾，不打断当前播放 */
   function enqueue(track: Track) {
-    if (queue.value.some((t) => isSameTrack(t, track))) return
+    if (queue.value.some((t) => isSameTrack(t, track))) return false
     queue.value.push(track)
     resetShuffleFutureAfterQueueChange()
     if (currentIndex.value === -1) {
       currentIndex.value = 0
       void requestPlayTrack(track)
     }
+    return true
   }
 
   function enqueueTracks(tracks: Track[]) {
     const toAdd = tracks.filter((track) => !queue.value.some((candidate) => isSameTrack(candidate, track)))
-    if (toAdd.length === 0) return
+    if (toAdd.length === 0) return 0
     const shouldStart = currentIndex.value === -1
     queue.value.push(...toAdd)
     resetShuffleFutureAfterQueueChange()
@@ -479,6 +491,7 @@ export const usePlayerStore = defineStore('player', () => {
       currentIndex.value = queue.value.length - toAdd.length
       void requestPlayTrack(queue.value[currentIndex.value])
     }
+    return toAdd.length
   }
 
   function playAt(index: number) {
@@ -599,6 +612,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function handleTrackEnded() {
     maybeRecordRecentProgress(true)
+    recordPlaybackBehavior('completed')
     if (playMode.value === 'single') {
       // 单曲循环：重新播放当前曲目
       const track = currentTrack.value
@@ -696,6 +710,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function pause() {
+    autoplaySeq = null
     streamingAudioPlayer.pause()
     status.value = 'paused'
   }
@@ -707,7 +722,9 @@ export const usePlayerStore = defineStore('player', () => {
 
   function stop() {
     maybeRecordRecentProgress(false)
+    recordPlaybackBehaviorBeforeTrackChange()
     playSeq++
+    autoplaySeq = null
     streamingAudioPlayer.stop()
     status.value = 'idle'
     currentTime.value = 0
@@ -939,6 +956,37 @@ export const usePlayerStore = defineStore('player', () => {
       listenMs: Math.round(playbackListenSeconds * 1000),
       completed: completedByPosition,
     })
+    recordPlaybackBehavior(completedByPosition ? 'completed' : 'played')
+  }
+
+  function recordPlaybackBehaviorBeforeTrackChange() {
+    const track = currentTrack.value
+    if (!track || !playbackRecentKey || playbackBehaviorRecorded) return
+    const dur = duration.value || track.duration || 0
+    const listenedRatio = dur > 0 ? playbackListenSeconds / dur : 0
+    if (playbackListenSeconds > 0 && playbackListenSeconds < QUICK_SKIP_SECONDS && listenedRatio < RECENT_RECORD_RATIO) {
+      recordPlaybackBehavior('skipped')
+    }
+  }
+
+  function recordPlaybackBehavior(event: 'played' | 'completed' | 'skipped') {
+    const track = currentTrack.value
+    if (!track || !playbackRecentKey) return
+    if (playbackBehaviorRecorded && event !== 'completed') return
+    const trackId = trackIdentity(track)
+    if (playbackRecentKey !== trackId) return
+    playbackBehaviorRecorded = true
+    void recordRecommendationEvent({
+      trackId,
+      event,
+      scene: 'player',
+      source: 'playback',
+      reason: 'playback-behavior',
+      score: 0,
+      playedSeconds: Math.round(playbackListenSeconds),
+      completed: event === 'completed',
+      skipped: event === 'skipped',
+    }).catch(() => undefined)
   }
 
   function accumulatePlaybackListenTime(position: number) {

@@ -14,6 +14,7 @@ import {
   replacePlaylistItemsRemote,
   removeLikeTrack,
   removeRecentTrack,
+  recordRecommendationEvent,
   updatePlaylistRemote,
 } from '@/api/client'
 import type { Playlist, Track } from '@/types'
@@ -205,11 +206,13 @@ export const useLibraryStore = defineStore('library', () => {
   function toggleLike(track: Track) {
     if (isTrackLiked(track)) {
       likes.value = likes.value.filter((t) => !isSameTrack(t, track))
+      recordBehavior(track, 'unliked')
       if (backendAvailable.value) {
         void removeLikeTrack(track).catch(handleBackgroundError)
       }
     } else {
       likes.value = [track, ...likes.value]
+      recordBehavior(track, 'liked')
       if (backendAvailable.value) {
         void addLikeTrack(track).catch(handleBackgroundError)
       }
@@ -293,6 +296,7 @@ export const useLibraryStore = defineStore('library', () => {
     if (playlist.tracks.some((t) => isSameTrack(t, track))) return
     playlist.tracks.push(track)
     if (!playlist.cover) playlist.cover = track.cover
+    recordBehavior(track, 'collection_added')
     if (backendAvailable.value) {
       void addPlaylistItemsRemote(id, [track]).catch(handleBackgroundError)
     }
@@ -305,6 +309,9 @@ export const useLibraryStore = defineStore('library', () => {
     if (toAdd.length === 0) return
     playlist.tracks.push(...toAdd)
     if (!playlist.cover) playlist.cover = toAdd[0]?.cover ?? null
+    for (const track of toAdd) {
+      recordBehavior(track, 'collection_added')
+    }
     if (backendAvailable.value) {
       void addPlaylistItemsRemote(id, toAdd).catch(handleBackgroundError)
     }
@@ -394,6 +401,17 @@ export const useLibraryStore = defineStore('library', () => {
       }
     }
     return result
+  }
+
+  function recordBehavior(track: Track, event: 'liked' | 'unliked' | 'collection_added') {
+    const trackId = track.trackId ?? `${track.bvid}:${track.cid ?? 'main'}`
+    void recordRecommendationEvent({
+      trackId,
+      event,
+      scene: 'library',
+      source: 'user-action',
+      reason: 'library-behavior',
+    }).catch(() => undefined)
   }
 
   function isSameTrack(a: Track, b: Track): boolean {

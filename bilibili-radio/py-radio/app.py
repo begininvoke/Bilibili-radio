@@ -176,7 +176,7 @@ def _recommendations_for_request() -> RecommendationService:
     return _request_service(
         '_recommendation_service',
         recommendation_service,
-        lambda user_id: RecommendationService(user_id=user_id),
+        lambda user_id: RecommendationService(user_id=user_id, bili_client=bili_client),
     )
 
 
@@ -193,6 +193,7 @@ def _analysis_for_request() -> AnalysisService:
 
 
 bili_client = BiliClient(cookie_provider=lambda: _auth_for_request().get_cookie_header())
+recommendation_service = RecommendationService(bili_client=bili_client)
 stream_service = StreamService(bili_client)
 register_monitoring(app, user_stats_provider=admin_service.monitoring_user_stats)
 

@@ -42,7 +42,7 @@
           A+
         </button>
         <button class="lyrics-control" type="button" :title="locked ? '解锁位置' : '锁定位置'" @click="toggleLocked">
-          <AppIcon :name="locked ? 'unlock' : 'lock'" :size="15" />
+          <AppIcon :name="locked ? 'lock' : 'unlock'" :size="15" />
         </button>
         <button class="lyrics-control danger" type="button" title="关闭悬浮歌词" @click="sendControl('close')">
           <AppIcon name="close" :size="15" />
@@ -63,6 +63,7 @@ const LYRICS_UPDATE_EVENT = 'desktop-lyrics:update'
 const LYRICS_READY_EVENT = 'desktop-lyrics:ready'
 const LYRICS_CONTROL_EVENT = 'desktop-lyrics:control'
 const LYRICS_LOCK_KEY = 'bili-radio:desktop-lyrics-locked'
+const CONTROL_DEBOUNCE_MS = 240
 
 type LyricsControlAction = 'toggle-play' | 'prev' | 'next' | 'font-smaller' | 'font-larger' | 'close'
 
@@ -86,13 +87,25 @@ const state = reactive<LyricsPayload>({
 const locked = ref(loadLockedState())
 
 let unlistenUpdate: (() => void) | null = null
+let lastControlAction: LyricsControlAction | null = null
+let lastControlAt = 0
 
 const shellStyle = computed<CSSProperties>(
-  () =>
-    ({
+  () => {
+    const fontSize = state.fontSize ?? 30
+    const scale = fontSize / 30
+    return ({
       '--lyrics-color': state.color,
-      '--lyrics-font-size': `${state.fontSize ?? 30}px`,
+      '--lyrics-font-size': `${fontSize}px`,
+      '--lyrics-scale': String(scale),
+      '--lyrics-shell-min-height': `${Math.round(66 * scale)}px`,
+      '--lyrics-shell-padding-y': `${Math.round(14 * scale)}px`,
+      '--lyrics-shell-padding-x': `${Math.round(28 * scale)}px`,
+      '--lyrics-text-left-pad': `${Math.round(48 * scale)}px`,
+      '--lyrics-text-right-pad': `${Math.round(188 * scale)}px`,
+      '--lyrics-drag-size': `${Math.round(16 * scale)}px`,
     }) as CSSProperties
+  }
 )
 
 onMounted(async () => {
@@ -144,6 +157,10 @@ async function startWindowDrag(event: MouseEvent) {
 
 async function sendControl(action: LyricsControlAction) {
   if (!isDesktopRuntime()) return
+  const now = performance.now()
+  if (lastControlAction === action && now - lastControlAt < CONTROL_DEBOUNCE_MS) return
+  lastControlAction = action
+  lastControlAt = now
   try {
     await emitTo('main', LYRICS_CONTROL_EVENT, { action })
   } catch (error) {
@@ -192,11 +209,11 @@ function normalizeFontSize(value: unknown): number {
 .lyrics-shell {
   position: relative;
   width: calc(100vw - 20px);
-  min-height: 66px;
+  min-height: var(--lyrics-shell-min-height, 66px);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 14px 28px;
+  padding: var(--lyrics-shell-padding-y, 14px) var(--lyrics-shell-padding-x, 28px);
   border-radius: 8px;
   background: transparent;
   border: 1px solid transparent;
@@ -222,6 +239,8 @@ function normalizeFontSize(value: unknown): number {
   background: rgba(10, 10, 14, 0.32);
   opacity: 0;
   pointer-events: none;
+  transform: scale(var(--lyrics-scale, 1));
+  transform-origin: top right;
   transition: opacity 120ms ease, background 120ms ease;
 }
 
@@ -288,34 +307,34 @@ function normalizeFontSize(value: unknown): number {
   top: -1px;
   left: -1px;
   right: -1px;
-  height: 16px;
+  height: var(--lyrics-drag-size, 16px);
 }
 
 .drag-border-right {
   top: -1px;
   right: -1px;
   bottom: -1px;
-  width: 16px;
+  width: var(--lyrics-drag-size, 16px);
 }
 
 .drag-border-bottom {
   right: -1px;
   bottom: -1px;
   left: -1px;
-  height: 16px;
+  height: var(--lyrics-drag-size, 16px);
 }
 
 .drag-border-left {
   top: -1px;
   bottom: -1px;
   left: -1px;
-  width: 16px;
+  width: var(--lyrics-drag-size, 16px);
 }
 
 .lyrics-text {
   width: 100%;
   margin: 0;
-  padding: 0 188px 0 48px;
+  padding: 0 var(--lyrics-text-right-pad, 188px) 0 var(--lyrics-text-left-pad, 48px);
   overflow: hidden;
   text-align: center;
   text-overflow: ellipsis;

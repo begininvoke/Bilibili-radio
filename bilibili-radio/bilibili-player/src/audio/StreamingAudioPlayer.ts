@@ -13,9 +13,21 @@ class StreamingAudioPlayer {
   private _onCanPlay: (() => void) | null = null
 
   init(): boolean {
+    if (isDesktopLyricsOverlayRoute()) {
+      console.warn('[StreamingAudioPlayer] Refused to initialize audio in desktop lyrics overlay')
+      return false
+    }
+
+    if (this.audioElement) {
+      this.applyPlaybackRate()
+      this.setVolume(this.volume)
+      return true
+    }
+
     try {
       this.audioElement = new Audio()
       this.audioElement.crossOrigin = 'anonymous'
+      this.audioElement.volume = this.isMuted ? 0 : this.volume
       this.applyPlaybackRate()
 
       this.audioElement.addEventListener('play', () => {
@@ -215,3 +227,7 @@ class StreamingAudioPlayer {
 }
 
 export const streamingAudioPlayer = new StreamingAudioPlayer()
+
+function isDesktopLyricsOverlayRoute(): boolean {
+  return window.location.hash.startsWith('#/desktop-lyrics')
+}

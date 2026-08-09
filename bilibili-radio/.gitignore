@@ -31,3 +31,5 @@ py-radio/dist/
 py-radio/.venv-desktop/
 bilibili-player/src-tauri/target/
 bilibili-player/src-tauri/gen/
+agent/
+*tar*

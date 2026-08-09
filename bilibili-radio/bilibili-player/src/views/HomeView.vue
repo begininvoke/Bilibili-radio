@@ -114,7 +114,7 @@ const playCountRanking = computed(() => {
 async function loadRecommendations() {
   recommendationLoading.value = true
   try {
-    const result = await fetchRecommendations('home', 5)
+    const result = await fetchRecommendations('home', 8)
     recommendations.value = result.items
   } catch {
     recommendations.value = []

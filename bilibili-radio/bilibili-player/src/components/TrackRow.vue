@@ -51,7 +51,7 @@
         >
           <AppIcon :name="isLiked ? 'heart-filled' : 'heart'" :size="16" />
         </button>
-        <button class="action-btn" :title="enqueueTitle" @click.stop="handleEnqueue">
+        <button class="action-btn" :title="enqueueTitle" @click.stop="handleEnqueue($event)">
           <AppIcon name="plus" :size="16" />
         </button>
         <button class="action-btn" title="添加到歌单" @click.stop="handlePlaylist">
@@ -107,7 +107,7 @@
             >
               <AppIcon :name="library.isTrackLiked(part) ? 'heart-filled' : 'heart'" :size="14" />
             </button>
-            <button class="part-btn" title="加入队列" @click="enqueuePart(part)">
+            <button class="part-btn" title="加入队列" @click="enqueuePart(part, $event)">
               <AppIcon name="plus" :size="14" />
             </button>
             <button class="part-btn" title="添加到歌单" @click="openPlaylistMenu(part)">
@@ -284,9 +284,10 @@ async function handlePrimaryPlay() {
   emit('play')
 }
 
-async function handleEnqueue() {
+async function handleEnqueue(event: MouseEvent) {
   resetPartsIfTrackChanged()
   if (props.track.cid != null || isKnownSinglePart.value) {
+    emitQueueAddEffect(event)
     emit('enqueue')
     return
   }
@@ -294,13 +295,16 @@ async function handleEnqueue() {
   const pageTracks = await ensureParts()
   if (pageTracks.length > 1) {
     partsOpen.value = true
-    enqueueParts(pageTracks)
+    enqueueParts(pageTracks, event)
     return
   }
   if (pageTracks[0]) {
-    player.enqueue(pageTracks[0])
+    if (player.enqueue(pageTracks[0])) {
+      emitQueueAddEffect(event)
+    }
     return
   }
+  emitQueueAddEffect(event)
   emit('enqueue')
 }
 
@@ -339,12 +343,27 @@ function playPart(part: Track) {
   player.playTrack(part)
 }
 
-function enqueuePart(part: Track) {
-  player.enqueue(part)
+function enqueuePart(part: Track, event: MouseEvent) {
+  if (player.enqueue(part)) {
+    emitQueueAddEffect(event)
+  }
 }
 
-function enqueueParts(pageTracks: Track[]) {
-  player.enqueueTracks(pageTracks)
+function enqueueParts(pageTracks: Track[], event: MouseEvent) {
+  if (player.enqueueTracks(pageTracks) > 0) {
+    emitQueueAddEffect(event)
+  }
+}
+
+function emitQueueAddEffect(event: MouseEvent) {
+  const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  const rect = target?.getBoundingClientRect()
+  window.dispatchEvent(new CustomEvent('bili-radio:queue-add-effect', {
+    detail: {
+      x: rect ? rect.left + rect.width / 2 : event.clientX,
+      y: rect ? rect.top + rect.height / 2 : event.clientY,
+    },
+  }))
 }
 
 function openOwner() {

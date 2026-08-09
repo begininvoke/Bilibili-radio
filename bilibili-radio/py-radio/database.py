@@ -348,6 +348,11 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 conn.execute('PRAGMA user_version = 7')
                 current_version = 7
 
+            if current_version < 8:
+                _ensure_recommendation_history_table(conn)
+                conn.execute('PRAGMA user_version = 8')
+                current_version = 8
+
             _ensure_current_schema_columns(conn)
 
         _initialized_paths.add(path)
@@ -362,6 +367,38 @@ def _ensure_current_schema_columns(conn: sqlite3.Connection) -> None:
         "TEXT NOT NULL DEFAULT 'user-created'",
     )
     _add_column_if_missing(conn, "playlists", "source_bvid", "TEXT")
+    _ensure_recommendation_history_table(conn)
+
+
+def _ensure_recommendation_history_table(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            track_id TEXT NOT NULL,
+            recommended_at TEXT NOT NULL,
+            clicked INTEGER NOT NULL DEFAULT 0,
+            played_seconds INTEGER NOT NULL DEFAULT 0,
+            completed INTEGER NOT NULL DEFAULT 0,
+            liked INTEGER NOT NULL DEFAULT 0,
+            skipped INTEGER NOT NULL DEFAULT 0,
+            scene TEXT NOT NULL DEFAULT 'home',
+            source TEXT NOT NULL DEFAULT '',
+            score REAL NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+            FOREIGN KEY(track_id) REFERENCES tracks(track_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_recommendation_history_user_recent
+            ON recommendation_history (user_id, recommended_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_recommendation_history_track_recent
+            ON recommendation_history (user_id, track_id, recommended_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_recommendation_history_feedback
+            ON recommendation_history (user_id, track_id, skipped, completed, liked);
+        """
+    )
 
 
 def _add_column_if_missing(

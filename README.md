@@ -1,79 +1,273 @@
 # Bilibili Radio
 
-Bilibili Radio 是一个把 B 站视频当作音乐电台来使用的播放器项目。当前仓库的主要业务代码在 `bilibili-radio/` 目录下，包含 Vue 3 前端、Flask 后端、播放数据服务、字幕/章节/评论信息，以及面向服务器部署的 Docker Compose 配置。
+**Bilibili Radio** 是一个面向 B 站音乐内容的桌面播放器。
 
-## 主要能力
+它可以将 B 站视频、多 P 视频、收藏夹和用户自建歌单统一整理成可播放的音乐曲目集合，并提供播放队列、我喜欢、UP 主主页、悬浮歌词和规则推荐等功能。
 
-- B 站扫码登录，复用用户账号获取收藏、历史、播放列表等内容。
-- 音频播放、队列、收藏、下载、搜索、播放详情页和迷你播放器。
-- 播放详情页支持字幕、简介、章节、评论区和私人评价。
-- 私人评价支持星级、情绪标签和可选留言，用于记录个人听歌感受。
-- 后端提供播放记录、偏好分析、管理监控和基础身份能力。
-- 支持本地开发、Docker Compose 部署，以及临时公网 IP 的 HTTP 部署模式。
+## Features
 
-## 目录结构
+* 搜索 B 站视频并播放音频
+* 支持 B 站多 P 视频展开为独立曲目
+* 支持播放队列、我喜欢、最近播放
+* 支持本地歌单 / Track Collection 管理
+* 支持 B 站收藏夹浏览与搜索
+* 支持 UP 主主页、稿件列表、时间排序和热度排序
+* 支持悬浮歌词、歌词字号与显示区域调整
+* 支持音频音质选择：
+
+  * 自动
+  * 64K
+  * 132K
+  * 192K
+  * Dolby
+  * Hi-Res
+* 支持倍速播放，并尽量保持变速不变调
+* 支持私人标签
+* 支持基于规则的首页推荐
+
+## Track Collection
+
+Bilibili Radio 内部使用统一的曲目集合模型。
+
+```ts
+interface Collection {
+  id: string
+  title: string
+  cover?: string
+
+  sourceType:
+    | 'user-created'
+    | 'bilibili-multipage'
+    | 'bilibili-favorite'
+
+  sourceBvid?: string | null
+  tracks: Track[]
+}
+```
+
+多 P 视频不会被当成一个包含多个分 P 的“虚假单曲”播放，而是会被展开为多个独立 `Track`。
+
+```ts
+interface Track {
+  id: string
+  bvid: string
+  cid: number
+
+  title: string
+  cover?: string
+
+  owner?: string
+  ownerMid?: number | null
+
+  duration?: number
+
+  startTime?: number
+  endTime?: number
+}
+```
+
+通过统一的 `Track` 模型，可以支持：
+
+* B 站单 P 视频
+* B 站多 P 中的某一个 P
+* 一个 P 中的时间片段
+* 多个 BV 混合组成的虚拟专辑
+* 用户自定义歌单
+
+播放层最终只消费：
 
 ```text
-bilibili-radio/
-  bilibili-player/      # Vue 3 前端
-  py-radio/             # Flask 后端与服务层
-  deploy/               # Linux 部署脚本和环境变量示例
-  docker-compose*.yml   # 不同部署模式的 Compose 配置
+Collection -> Track[]
+Queue      -> Track[]
 ```
 
-仓库根目录仍保留旧的 `bilibili-player/`、`py-radio/` 目录，用于兼容历史结构；当前开发和部署以 `bilibili-radio/` 为准。
+从而避免针对单 P、多 P、收藏夹等来源分别维护不同的播放逻辑。
 
-## 本地开发
+## Recommendation
 
-后端：
+推荐系统当前采用**规则推荐**，暂不使用机器学习。
 
-```powershell
-cd bilibili-radio\py-radio
-pip install -r requirements.txt
-python app.py
+首页默认推荐 8 首：
+
+* 3 首高分推荐
+* 5 首探索推荐
+
+候选内容主要来自：
+
+* 常听 UP 的其他稿件
+* 喜欢歌曲对应 UP 的其他稿件
+* 私人标签相关内容
+* 最近热门音乐稿件
+
+推荐系统会结合用户的播放行为进行简单调整，包括：
+
+* 播放次数
+* 实际播放进度
+* 最近播放记录
+* 喜欢记录
+* 私人标签
+* UP 主偏好
+
+播放次数不会在点击歌曲时立即增加，而是在用户实际播放达到一定进度后再记录，减少误点击对推荐结果的干扰。
+
+## Player
+
+播放器支持：
+
+* 播放 / 暂停
+* 上一首 / 下一首
+* 循环播放
+* 随机播放
+* 播放队列
+* 音质选择
+* 倍速播放
+* 悬浮歌词控制
+
+多 P 视频加入播放队列时，会先展开为多个独立曲目：
+
+```text
+BV Multi-Page Video
+        ↓
+P1 -> Track
+P2 -> Track
+P3 -> Track
+...
+        ↓
+    Play Queue
 ```
 
-前端：
+因此切换分 P 本质上和切换普通歌曲一致。
 
-```powershell
-cd bilibili-radio\bilibili-player
-npm install
-npm run dev
+## Audio Quality
+
+当前音频流支持以下偏好：
+
+| 音质     | Bilibili Audio ID |
+| ------ | ----------------: |
+| 64K    |           `30216` |
+| 132K   |           `30232` |
+| 192K   |           `30280` |
+| Dolby  |           `30250` |
+| Hi-Res |           `30251` |
+
+同时支持：
+
+```text
+Auto
 ```
 
-默认前端开发服务会代理到本地后端。首次使用需要通过 B 站扫码完成登录。
+作为默认音质策略。
 
-## Linux 部署
+如果用户选择的音质在当前视频中不可用，播放器会自动回退到可用音频流。
 
-在服务器上解压部署包后：
+Dolby 和 Hi-Res 只有在 B 站接口实际返回对应音频流时才可用。
+
+
+## Playback Speed
+
+播放器支持倍速播放。
+
+底层使用浏览器音频播放能力调整 `playbackRate`，并尽量启用 `preservesPitch`，降低倍速播放时产生明显音调变化的问题。
+
+## Desktop Lyrics
+
+悬浮歌词支持：
+
+* 显示当前歌词
+* 播放 / 暂停
+* 上一首 / 下一首
+* 字号调整
+* 显示区域随字号缩放
+* 锁定 / 解锁位置
+* 关闭悬浮歌词
+
+悬浮歌词中的播放控制会同步到主播放器，而不是创建新的独立播放器实例，避免多个音频实例同时播放。
+
+## UP Profile
+
+点击歌曲中的 UP 主名称，可以进入对应的 UP 主主页。
+
+主页主要展示：
+
+* UP 主头像
+* UP 主名称
+* 简介
+* 稿件列表
+
+稿件支持：
+
+* 按发布时间排序
+* 按热度排序
+* 分页 / 滚动加载
+
+UP 主页面只保留与播放器内容浏览相关的信息，不尝试复刻完整的 B 站个人空间。
+
+## Private Tags
+
+用户可以给歌曲添加私人标签，用于本地整理和推荐。
+
+标签支持：
+
+* 预设标签
+* 自定义标签
+* 最多 4 个字
+
+例如：
+
+```text
+治愈
+燃
+通勤
+写代码
+```
+
+私人标签只用于本地内容管理和推荐逻辑。
+
+## Development
+
+### 安装依赖
 
 ```bash
-tar -xzf bilibili-radio-deploy.tar.gz
-cd bilibili-radio
-cp deploy/env.http-ip.example .env
-bash deploy/deploy.sh http-ip
+npm install
 ```
 
-`http-ip` 是临时公网 IP 模式，会关闭应用内登录鉴权，适合短期验证。生产环境应放在防火墙、VPN、安全组或反向代理之后，并优先使用域名、HTTPS 和正式鉴权配置。
+### Frontend Type Check
 
-## 常用检查
-
-后端测试：
-
-```powershell
-cd bilibili-radio\py-radio
-python -m pytest -q
+```bash
+npm run type-check
 ```
 
-前端构建：
+### Build Frontend
 
-```powershell
-cd bilibili-radio\bilibili-player
+```bash
 npm run build
 ```
 
-部署配置检查：
+### Run Backend Tests
 
 ```bash
-docker compose -f bilibili-radio/docker-compose.yml -f bilibili-radio/docker-compose.http-ip.yml config
+python -m unittest discover -s tests
 ```
+
+### Build Desktop App
+
+```bash
+npm run desktop:build
+```
+
+## 技术栈
+
+* Vue 3
+* TypeScript
+* Pinia
+* Tauri
+* Python
+* Flask
+* SQLite
+
+## Notes
+* release里有安装包。
+* Bilibili Radio 仅用于个人音乐播放与内容整理。
+* 音频流和视频信息来自 B 站接口返回结果。
+* Dolby 和 Hi-Res 只有在接口实际返回对应音频流时才可用。
+
